@@ -1,0 +1,1155 @@
+"""
+Phishing Pipeline Server -- Eval Playground + Consolidated Trace
+Migrated to Emergent platform with MongoDB, BigQuery, and Supabase Auth.
+"""
+
+import json
+import asyncio
+import httpx
+import logging
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Optional
+
+from dotenv import load_dotenv
+from fastapi import FastAPI, APIRouter, Request, Query, HTTPException
+from starlette.middleware.cors import CORSMiddleware
+from motor.motor_asyncio import AsyncIOMotorClient
+from google.cloud import bigquery
+from google.oauth2 import service_account
+
+ROOT_DIR = Path(__file__).parent
+load_dotenv(ROOT_DIR / ".env")
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
+logger = logging.getLogger(__name__)
+
+# MongoDB
+mongo_url = os.environ["MONGO_URL"]
+mongo_client = AsyncIOMotorClient(mongo_url)
+db = mongo_client[os.environ["DB_NAME"]]
+
+app = FastAPI(title="Phishing Pipeline Server", redirect_slashes=False)
+api_router = APIRouter(prefix="/api")
+
+# BigQuery Client
+BQ_SA_PATH = ROOT_DIR / "gcp-service-account.json"
+bq_client = None
+try:
+    bq_credentials = service_account.Credentials.from_service_account_file(
+        str(BQ_SA_PATH),
+        scopes=["https://www.googleapis.com/auth/bigquery"],
+    )
+    bq_client = bigquery.Client(credentials=bq_credentials, project=bq_credentials.project_id)
+    logger.info("BigQuery client initialized successfully")
+except Exception as e:
+    logger.error(f"BigQuery client init failed: {e}")
+
+# Pipeline cutoff — only process data from this timestamp onwards
+BQ_CUTOFF = "2026-02-21 10:48:21.939779 UTC"
+
+
+
+# ---- Supabase Auth ----
+
+SUPABASE_URL = os.environ.get("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.environ.get("SUPABASE_ANON_KEY")
+
+_supabase_user_cache = {}
+
+
+async def get_current_user(request: Request) -> dict:
+    token = None
+    # Try Authorization header first
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        token = auth_header[7:]
+    # Fallback: cookie
+    if not token:
+        token = request.cookies.get("sb_token")
+    # Fallback: query param (survives proxy 307 redirects that strip headers)
+    if not token:
+        token = request.query_params.get("_token")
+    if not token:
+        raise HTTPException(status_code=401, detail="Not authenticated: missing Authorization header")
+
+    # Verify token with Supabase
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(
+                f"{SUPABASE_URL}/auth/v1/user",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "apikey": SUPABASE_ANON_KEY,
+                },
+            )
+        if resp.status_code != 200:
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+        supabase_user = resp.json()
+        email = supabase_user.get("email", "")
+        user_id = supabase_user.get("id", "")
+
+        return {
+            "user_id": user_id,
+            "email": email,
+            "name": supabase_user.get("user_metadata", {}).get("name", email.split("@")[0]),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Supabase token verification failed: {e}")
+        raise HTTPException(status_code=401, detail="Authentication failed")
+
+
+@api_router.get("/auth/me")
+async def auth_me(request: Request):
+    return await get_current_user(request)
+
+
+# ---- Health Check ----
+
+@app.get("/health")
+async def root_health_check():
+    """Root health check for deployment platform (no /api prefix)."""
+    return {"status": "ok"}
+
+
+@api_router.get("/health")
+async def health_check():
+    checks = {"status": "ok", "mongo": False, "bigquery": False}
+    try:
+        await db.command("ping")
+        checks["mongo"] = True
+    except Exception:
+        pass
+    if bq_client:
+        checks["bigquery"] = True
+    return checks
+
+
+# ---- Eval Config helpers ----
+
+async def get_eval_config() -> dict:
+    config = await db.eval_config.find_one({"_id": "global"})
+    if config:
+        return {
+            "llm_classifier_prompt_version": config.get("llm_classifier_prompt_version", "v1.0"),
+            "escalation_agent_prompt_version": config.get("escalation_agent_prompt_version", "v1.0"),
+            "user_message_prompt_version": config.get("user_message_prompt_version", "v1.0"),
+        }
+    return {
+        "llm_classifier_prompt_version": "v1.0",
+        "escalation_agent_prompt_version": "v1.0",
+        "user_message_prompt_version": "v1.0",
+    }
+
+
+async def current_versions() -> dict:
+    cfg = await get_eval_config()
+    return {
+        "llm_classifier": cfg.get("llm_classifier_prompt_version", ""),
+        "escalation_agent": cfg.get("escalation_agent_prompt_version", ""),
+        "user_message": cfg.get("user_message_prompt_version", ""),
+    }
+
+
+def eval_key(job_id: str, versions: dict) -> str:
+    return f"{job_id}::{versions['llm_classifier']}::{versions['escalation_agent']}::{versions['user_message']}"
+
+
+async def upsert_eval_job(job_id: str, **kwargs):
+    v = await current_versions()
+    key = eval_key(job_id, v)
+    existing = await db.eval_jobs.find_one({"eval_key": key}, {"_id": 0})
+    if not existing:
+        doc = {
+            "eval_key": key,
+            "job_id": job_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "task_preview": None,
+            "user_id": None,
+            "image_url": None,
+            "stage_1": None,
+            "whitecircle": None,
+            "stage_2": None,
+            "human_verdict_s1": None,
+            "human_verdict_wc": None,
+            "human_verdict_s2": None,
+            "human_notes": None,
+            "pipeline_time": None,
+            "prompt_versions": v,
+        }
+        for k, val in kwargs.items():
+            if val is not None:
+                doc[k] = val
+        await db.eval_jobs.insert_one(doc)
+    else:
+        updates = {k: val for k, val in kwargs.items() if val is not None}
+        if updates:
+            await db.eval_jobs.update_one({"eval_key": key}, {"$set": updates})
+    return key
+
+
+# ---- Pipeline Events ----
+
+@api_router.post("/pipeline-event")
+async def pipeline_event(request: Request):
+    body = await request.json()
+    job_id = body.get("job_id", "unknown")
+    event = body.get("event", "unknown")
+
+    await db.pipeline_traces.update_one(
+        {"job_id": job_id},
+        {"$setOnInsert": {"job_id": job_id, "created_at": datetime.now(timezone.utc).isoformat()},
+         "$push": {"events": body}},
+        upsert=True,
+    )
+
+    if event == "bigquery_fetch":
+        data = body.get("data", {})
+        await upsert_eval_job(
+            job_id,
+            task_preview=data.get("task_preview"),
+            user_id=data.get("user_id"),
+            image_url=data.get("image_url"),
+        )
+
+    return {"status": "ok"}
+
+
+@api_router.post("/classifier-result")
+async def classifier_result(request: Request):
+    body = await request.json()
+    job_id = body.get("job_id", "unknown")
+
+    s1_data = {
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "classification": body.get("classification"),
+        "raw_output": body.get("raw_output"),
+        "elapsed_seconds": body.get("elapsed_seconds"),
+        "image_url": body.get("image_url"),
+        "user_id": body.get("user_id"),
+        "task_preview": body.get("task_preview"),
+    }
+
+    await db.pipeline_traces.update_one(
+        {"job_id": job_id},
+        {"$set": {"stage_1_classifier": s1_data}},
+        upsert=True,
+    )
+    await upsert_eval_job(
+        job_id,
+        stage_1=s1_data,
+        image_url=body.get("image_url"),
+        user_id=body.get("user_id"),
+        task_preview=body.get("task_preview"),
+    )
+
+    return {"status": "ok", "job_id": job_id}
+
+
+@api_router.post("/whitecircle-result")
+async def whitecircle_result(request: Request):
+    body = await request.json()
+    job_id = body.get("job_id", "unknown")
+    wc = body.get("result") or {}
+    wc_data = {
+        "received_at": datetime.now(timezone.utc).isoformat(),
+        "flagged": wc.get("flagged"),
+        "policies": wc.get("policies", {}),
+        "internal_session_id": wc.get("internal_session_id"),
+        "elapsed_seconds": body.get("elapsed_seconds"),
+        "error": body.get("error"),
+        "raw": wc,
+    }
+    await upsert_eval_job(job_id, whitecircle=wc_data)
+    return {"status": "ok", "job_id": job_id}
+
+
+@api_router.post("/webhook")
+async def agent_webhook(request: Request):
+    body = await request.json()
+    job_id = body.get("job_id", "unknown")
+
+    classification = body.get("classification", {})
+    trace = await db.pipeline_traces.find_one({"job_id": job_id})
+    pipeline_time = None
+    if trace:
+        s1 = trace.get("stage_1_classifier")
+        if s1 and s1.get("received_at"):
+            t1 = datetime.fromisoformat(s1["received_at"])
+            t2 = datetime.now(timezone.utc)
+            pipeline_time = (t2 - t1).total_seconds()
+
+    await db.pipeline_traces.update_one(
+        {"job_id": job_id},
+        {"$set": {"stage_2_escalation": {"received_at": datetime.now(timezone.utc).isoformat(), "result": body}}},
+        upsert=True,
+    )
+    await upsert_eval_job(job_id, stage_2=body, pipeline_time=pipeline_time)
+    return {"status": 200}
+
+
+# ---- BigQuery → MongoDB Sync ----
+
+SYNC_INTERVAL_SECONDS = 30 * 60  # 30 minutes
+
+SYNC_QUERY = f"""
+WITH ranked_ph AS (
+  SELECT
+    ph.job_id, ph.timestamp, ph.user_id, ph.confidence_score,
+    ph.is_phishing, ph.image_url, ph.reason, ph.severity,
+    jj.task,
+    DENSE_RANK() OVER (PARTITION BY ph.job_id ORDER BY ph.timestamp DESC) AS rnk
+  FROM `hitl.PhishingClassification` ph
+  LEFT JOIN `analytics.jobs_full_view` jj ON ph.job_id = jj.id
+  WHERE ph.is_phishing = true
+    AND ph.severity IN ('high', 'critical')
+    AND ph.timestamp >= '{BQ_CUTOFF}'
+),
+ph AS (SELECT * FROM ranked_ph WHERE rnk = 1),
+ag AS (
+  SELECT *
+  FROM `phishing_eval.escalation_agent`
+  WHERE event_name = 'phishing.escalation.completed'
+    AND emitted_at >= '{BQ_CUTOFF}'
+)
+SELECT ph.*, ag.* EXCEPT(job_id)
+FROM ph
+LEFT JOIN ag ON ph.job_id = ag.job_id
+WHERE ph.timestamp >= @last_sync OR ag.emitted_at >= @last_sync
+"""
+
+FULL_SYNC_QUERY = f"""
+WITH ranked_ph AS (
+  SELECT
+    ph.job_id, ph.timestamp, ph.user_id, ph.confidence_score,
+    ph.is_phishing, ph.image_url, ph.reason, ph.severity,
+    jj.task,
+    DENSE_RANK() OVER (PARTITION BY ph.job_id ORDER BY ph.timestamp DESC) AS rnk
+  FROM `hitl.PhishingClassification` ph
+  LEFT JOIN `analytics.jobs_full_view` jj ON ph.job_id = jj.id
+  WHERE ph.is_phishing = true
+    AND ph.severity IN ('high', 'critical')
+    AND ph.timestamp >= '{BQ_CUTOFF}'
+),
+ph AS (SELECT * FROM ranked_ph WHERE rnk = 1),
+ag AS (
+  SELECT *
+  FROM `phishing_eval.escalation_agent`
+  WHERE event_name = 'phishing.escalation.completed'
+    AND emitted_at >= '{BQ_CUTOFF}'
+)
+SELECT ph.*, ag.* EXCEPT(job_id)
+FROM ph
+LEFT JOIN ag ON ph.job_id = ag.job_id
+"""
+
+
+def _safe_str(val, max_len=0):
+    if val is None:
+        return None
+    s = str(val)
+    if max_len and len(s) > max_len:
+        return s[:max_len]
+    return s
+
+
+def _safe_bool(val):
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    return str(val).lower() in ("true", "1", "yes")
+
+
+def _ts_to_str(val):
+    if val is None:
+        return None
+    if hasattr(val, "isoformat"):
+        return val.isoformat()
+    return str(val)
+
+
+def transform_bq_row_to_doc(row: dict) -> dict:
+    """Transform a BQ row into the MongoDB bq_jobs document format."""
+    job_id = row.get("job_id", "")
+    ts_str = _ts_to_str(row.get("timestamp"))
+    task_raw = _safe_str(row.get("task"))
+    emitted_at_str = _ts_to_str(row.get("emitted_at"))
+
+    doc = {
+        "job_id": job_id,
+        "timestamp": ts_str,
+        "user_id": row.get("user_id"),
+        "confidence_score": row.get("confidence_score"),
+        "is_phishing": _safe_bool(row.get("is_phishing")),
+        "image_url": row.get("image_url"),
+        "reason": row.get("reason"),
+        "severity": row.get("severity"),
+        "task": task_raw,
+        "classification_label": row.get("classification_label"),
+        "classification_severity": row.get("classification_severity"),
+        "classification_confidence": row.get("classification_confidence"),
+        "classification_category": row.get("classification_category"),
+        "classification_reasoning": row.get("classification_reasoning"),
+        "credential_theft_detected": _safe_bool(row.get("credential_theft_detected")),
+        "credential_theft_details": row.get("credential_theft_details"),
+        "deceptive_exfiltration_detected": _safe_bool(row.get("deceptive_exfiltration_detected")),
+        "deceptive_exfiltration_details": row.get("deceptive_exfiltration_details"),
+        "user_deceived_detected": _safe_bool(row.get("user_deceived_detected")),
+        "user_deceived_details": row.get("user_deceived_details"),
+        "tool_for_scale_harm_detected": _safe_bool(row.get("tool_for_scale_harm_detected")),
+        "tool_for_scale_harm_details": row.get("tool_for_scale_harm_details"),
+        "service_replication_detected": _safe_bool(row.get("service_replication_detected")),
+        "service_replication_details": row.get("service_replication_details"),
+        "what_was_built": row.get("what_was_built"),
+        "image_analysis_note": row.get("image_analysis_note"),
+        "recommended_actions": row.get("recommended_actions"),
+        "task_description": row.get("task_description"),
+        "slack_emoji": row.get("slack_emoji"),
+        "slack_headline": row.get("slack_headline"),
+        "slack_verdict": row.get("slack_verdict"),
+        "job_details_called": _safe_bool(row.get("job_details_called")),
+        "job_details_success": _safe_bool(row.get("job_details_success")),
+        "job_key_findings": row.get("job_key_findings"),
+        "job_task_description": row.get("job_task_description"),
+        "agent_trajectory_called": _safe_bool(row.get("agent_trajectory_called")),
+        "agent_trajectory_success": _safe_bool(row.get("agent_trajectory_success")),
+        "agent_trajectory_total_steps": row.get("agent_trajectory_total_steps"),
+        "trajectory_key_findings": row.get("trajectory_key_findings"),
+        "suspicious_actions": row.get("suspicious_actions"),
+        "external_urls_detected": row.get("external_urls_detected"),
+        "hitl_interactions_called": _safe_bool(row.get("hitl_interactions_called")),
+        "hitl_interactions_success": _safe_bool(row.get("hitl_interactions_success")),
+        "total_hitl_interactions": row.get("total_hitl_interactions"),
+        "hitl_key_findings": row.get("hitl_key_findings"),
+        "hitl_notable_quotes": row.get("hitl_notable_quotes"),
+        "emitted_at": emitted_at_str,
+        "synced_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return doc
+
+
+async def run_bq_sync(full: bool = False):
+    """Sync BigQuery data into MongoDB bq_jobs collection."""
+    if not bq_client:
+        logger.warning("BQ sync skipped: BigQuery client not configured")
+        return {"status": "skipped", "reason": "no bq_client"}
+
+    try:
+        if full:
+            query = FULL_SYNC_QUERY
+            query_params = []
+            logger.info("Starting FULL BQ → MongoDB sync...")
+        else:
+            sync_meta = await db.sync_metadata.find_one({"_id": "bq_sync"})
+            if sync_meta and sync_meta.get("last_sync_at"):
+                last_sync = sync_meta["last_sync_at"]
+            else:
+                last_sync = BQ_CUTOFF
+                full = True
+                query = FULL_SYNC_QUERY
+                query_params = []
+
+            if not full:
+                query = SYNC_QUERY
+                query_params = [bigquery.ScalarQueryParameter("last_sync", "TIMESTAMP", last_sync)]
+                logger.info(f"Starting incremental BQ → MongoDB sync since {last_sync}...")
+
+        job_config = bigquery.QueryJobConfig(query_parameters=query_params) if query_params else bigquery.QueryJobConfig()
+        # Run BQ query in a thread to avoid blocking the event loop (health checks)
+        def _run_bq_query():
+            bq_job = bq_client.query(query, job_config=job_config)
+            return [dict(r) for r in bq_job.result()]
+        rows = await asyncio.to_thread(_run_bq_query)
+        logger.info(f"BQ sync: fetched {len(rows)} rows")
+
+        upserted = 0
+        modified = 0
+        from pymongo import UpdateOne
+        if rows:
+            ops = []
+            for row in rows:
+                doc = transform_bq_row_to_doc(row)
+                ops.append(UpdateOne(
+                    {"job_id": doc["job_id"]},
+                    {"$set": doc},
+                    upsert=True,
+                ))
+            # Write in batches of 500 to avoid blocking the event loop (health checks)
+            BATCH_SIZE = 500
+            for i in range(0, len(ops), BATCH_SIZE):
+                batch = ops[i:i + BATCH_SIZE]
+                result = await db.bq_jobs.bulk_write(batch, ordered=False)
+                upserted += result.upserted_count
+                modified += result.modified_count
+                await asyncio.sleep(0)  # yield to event loop for health checks
+            logger.info(f"BQ sync: upserted {upserted}, modified {modified}")
+
+        now = datetime.now(timezone.utc).isoformat()
+        update_fields = {"last_sync_at": now, "jobs_synced": len(rows), "upserted": upserted}
+        if full:
+            update_fields["last_full_sync_at"] = now
+        await db.sync_metadata.update_one(
+            {"_id": "bq_sync"},
+            {"$set": update_fields},
+            upsert=True,
+        )
+
+        # Ensure indexes
+        await db.bq_jobs.create_index("job_id", unique=True)
+        await db.bq_jobs.create_index("classification_label")
+        await db.bq_jobs.create_index("timestamp")
+
+        return {"status": "ok", "fetched": len(rows), "upserted": upserted}
+    except Exception as e:
+        logger.error(f"BQ sync failed: {e}")
+        return {"status": "error", "error": str(e)}
+
+
+async def bq_sync_loop():
+    """Background loop that syncs BQ → MongoDB every SYNC_INTERVAL_SECONDS."""
+    await asyncio.sleep(10)  # Wait for app startup and first health checks
+    # Only full sync if bq_jobs collection is empty; otherwise incremental
+    count = await db.bq_jobs.count_documents({})
+    if count == 0:
+        logger.info("No bq_jobs data found — running full sync on first boot")
+        await run_bq_sync(full=True)
+    else:
+        logger.info(f"Found {count} existing bq_jobs — running incremental sync")
+        await run_bq_sync(full=False)
+    while True:
+        await asyncio.sleep(SYNC_INTERVAL_SECONDS)
+        await run_bq_sync(full=False)
+
+
+# ---- Production Mode (reads from MongoDB bq_jobs) ----
+
+VALID_S2_LABELS = {"CONFIRMED_MALICIOUS", "NEEDS_HUMAN_REVIEW", "LEGITIMATE"}
+
+
+def mongo_doc_to_eval_format(doc: dict, existing_verdict: dict = None) -> dict:
+    """Convert a bq_jobs MongoDB doc into the eval format the frontend expects."""
+    job_id = doc.get("job_id", "")
+    ek = f"prod::{job_id}"
+    ts_str = doc.get("timestamp")
+    task_raw = doc.get("task")
+
+    stage_1 = {
+        "received_at": ts_str,
+        "classification": {
+            "result": doc.get("is_phishing"),
+            "confidence": doc.get("confidence_score"),
+            "severity": doc.get("severity"),
+            "reason": doc.get("reason"),
+            "category": None,
+            "_usage": None,
+        },
+        "raw_output": None,
+        "elapsed_seconds": None,
+        "image_url": doc.get("image_url"),
+        "user_id": doc.get("user_id"),
+        "task_preview": task_raw,
+    }
+
+    stage_2 = None
+    if doc.get("classification_label") is not None:
+        stage_2 = {
+            "classification": {
+                "label": doc.get("classification_label"),
+                "severity": doc.get("classification_severity"),
+                "confidence": doc.get("classification_confidence"),
+                "category": doc.get("classification_category"),
+                "reasoning": doc.get("classification_reasoning"),
+            },
+            "harm_assessment": {
+                "credential_theft": {"detected": doc.get("credential_theft_detected"), "details": doc.get("credential_theft_details")},
+                "deceptive_exfiltration": {"detected": doc.get("deceptive_exfiltration_detected"), "details": doc.get("deceptive_exfiltration_details")},
+                "user_deceived": {"detected": doc.get("user_deceived_detected"), "details": doc.get("user_deceived_details")},
+                "tool_for_scale_harm": {"detected": doc.get("tool_for_scale_harm_detected"), "details": doc.get("tool_for_scale_harm_details")},
+                "service_replication": {"detected": doc.get("service_replication_detected"), "details": doc.get("service_replication_details")},
+            },
+            "what_was_built": doc.get("what_was_built"),
+            "image_analysis_note": doc.get("image_analysis_note"),
+            "recommended_actions": doc.get("recommended_actions"),
+            "task_description": doc.get("task_description"),
+            "slack_summary": {
+                "emoji": doc.get("slack_emoji"),
+                "headline": doc.get("slack_headline"),
+                "verdict": doc.get("slack_verdict"),
+            },
+            "tool_findings": {
+                "job_details": {"called": doc.get("job_details_called"), "success": doc.get("job_details_success"), "key_findings": doc.get("job_key_findings"), "task_description": doc.get("job_task_description")},
+                "agent_trajectory": {"called": doc.get("agent_trajectory_called"), "success": doc.get("agent_trajectory_success"), "total_steps": doc.get("agent_trajectory_total_steps"), "key_findings": doc.get("trajectory_key_findings"), "suspicious_actions": doc.get("suspicious_actions"), "external_urls_detected": doc.get("external_urls_detected")},
+                "hitl_interactions": {"called": doc.get("hitl_interactions_called"), "success": doc.get("hitl_interactions_success"), "total_hitl_interactions": doc.get("total_hitl_interactions"), "key_findings": doc.get("hitl_key_findings"), "notable_quotes": doc.get("hitl_notable_quotes")},
+            },
+        }
+
+    ev = existing_verdict or {}
+    return {
+        "eval_key": ek,
+        "job_id": job_id,
+        "created_at": ts_str,
+        "task_preview": task_raw,
+        "user_id": doc.get("user_id"),
+        "image_url": doc.get("image_url"),
+        "stage_1": stage_1,
+        "whitecircle": None,
+        "stage_2": stage_2,
+        "human_verdict_s1": ev.get("human_verdict_s1"),
+        "human_verdict_wc": ev.get("human_verdict_wc"),
+        "human_verdict_s2": ev.get("human_verdict_s2"),
+        "human_notes": ev.get("human_notes"),
+        "pipeline_time": None,
+        "prompt_versions": {"llm_classifier": "prod", "escalation_agent": "prod", "user_message": "prod"},
+        "taken_down": ev.get("taken_down", False),
+        "takedown_info": ev.get("takedown_info"),
+    }
+
+
+@api_router.get("/prod/jobs")
+async def prod_jobs(
+    request: Request,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    s2_labels: Optional[str] = Query(None),
+):
+    await get_current_user(request)
+
+    try:
+        query_filter = {}
+        if s2_labels:
+            labels = [lb.strip() for lb in s2_labels.split(",") if lb.strip() in VALID_S2_LABELS]
+            if labels:
+                query_filter["classification_label"] = {"$in": labels}
+
+        # Sort: jobs with S2 (emitted_at) first DESC, then in-flight by timestamp DESC
+        # MongoDB sorts null first in DESC, so use aggregation to push nulls to the end
+        agg_pipeline = [
+            {"$match": query_filter},
+            {"$addFields": {"has_s2": {"$cond": [{"$gt": ["$emitted_at", None]}, 1, 0]}}},
+            {"$sort": {"has_s2": -1, "emitted_at": -1, "timestamp": -1}},
+            {"$skip": offset},
+            {"$limit": limit + 1},
+            {"$project": {"_id": 0, "has_s2": 0}},
+        ]
+        docs = await db.bq_jobs.aggregate(agg_pipeline).to_list(limit + 1)
+
+        has_more = len(docs) > limit
+        if has_more:
+            docs = docs[:limit]
+
+        if not docs:
+            return {"jobs": [], "has_more": False, "total_loaded": offset}
+
+        # Batch load verdicts
+        job_ids = [d["job_id"] for d in docs]
+        verdict_keys = [f"prod::{jid}" for jid in job_ids]
+        verdict_docs = await db.eval_verdicts.find({"eval_key": {"$in": verdict_keys}}, {"_id": 0}).to_list(200)
+        verdict_map = {d["eval_key"]: d for d in verdict_docs}
+
+        result_jobs = [mongo_doc_to_eval_format(d, verdict_map.get(f"prod::{d['job_id']}", {})) for d in docs]
+        return {"jobs": result_jobs, "has_more": has_more, "total_loaded": offset + len(result_jobs)}
+
+    except Exception as e:
+        logger.error(f"Production jobs query failed: {e}")
+        return {"error": str(e), "jobs": [], "has_more": False, "total_loaded": 0}
+
+
+@api_router.get("/prod/job/{job_id}")
+async def get_single_job(job_id: str, request: Request):
+    """Lookup a single job by job_id from MongoDB."""
+    await get_current_user(request)
+    doc = await db.bq_jobs.find_one({"job_id": job_id}, {"_id": 0})
+    if not doc:
+        raise HTTPException(status_code=404, detail=f"Job {job_id} not found")
+
+    ev = await db.eval_verdicts.find_one({"eval_key": f"prod::{job_id}"}, {"_id": 0}) or {}
+    job = mongo_doc_to_eval_format(doc, ev)
+    return {"job": job}
+
+
+
+@api_router.post("/prod/verdict/{job_id}")
+async def prod_verdict(job_id: str, request: Request):
+    await get_current_user(request)
+    body = await request.json()
+    ek = f"prod::{job_id}"
+
+    update = {}
+    if "verdict_s1" in body:
+        update["human_verdict_s1"] = body["verdict_s1"]
+    if "verdict_wc" in body:
+        update["human_verdict_wc"] = body["verdict_wc"]
+    if "verdict_s2" in body:
+        update["human_verdict_s2"] = body["verdict_s2"]
+    if "notes" in body:
+        update["human_notes"] = body["notes"]
+
+    if update:
+        update["eval_key"] = ek
+        update["job_id"] = job_id
+        await db.eval_verdicts.update_one({"eval_key": ek}, {"$set": update}, upsert=True)
+
+    return {"status": "ok", "eval_key": ek}
+
+
+# ---- BigQuery Takedown Logging ----
+
+BQ_TAKEDOWN_TABLE = "phishing_eval.job_takedowns"
+
+
+def _bq_insert_takedown_sync(row: dict):
+    """Synchronous BQ insert — called via run_in_executor."""
+    try:
+        errors = bq_client.insert_rows_json(BQ_TAKEDOWN_TABLE, [row])
+        if errors:
+            logger.error(f"BQ takedown insert errors: {errors}")
+        else:
+            logger.info(f"BQ takedown logged for job {row.get('job_id')}")
+    except Exception as e:
+        logger.error(f"BQ takedown insert failed: {e}")
+
+
+def log_takedown_to_bq(row: dict):
+    """Insert a takedown row into BigQuery in the background (fire-and-forget)."""
+    if not bq_client:
+        logger.warning("BQ takedown log skipped: no bq_client")
+        return
+    bq_row = {
+        "job_id": row.get("job_id", ""),
+        "taken_down_by": row.get("taken_down_by", ""),
+        "taken_down_at": row.get("taken_down_at", datetime.now(timezone.utc).isoformat()),
+        "suspension_reason": row.get("suspension_reason", ""),
+        "s2_label": row.get("s2_label"),
+        "task_preview": row.get("task_preview"),
+        "api_status_code": row.get("api_status_code"),
+        "is_test_mode": row.get("is_test_mode", False),
+    }
+    asyncio.get_event_loop().run_in_executor(None, _bq_insert_takedown_sync, bq_row)
+
+
+# ---- Takedown API ----
+
+@api_router.post("/prod/takedown/{job_id}")
+async def takedown_job(job_id: str, request: Request):
+    """Mark a job as taken down. Calls the disable API, logs to MongoDB + BigQuery."""
+    user = await get_current_user(request)
+    body = await request.json()
+
+    suspension_reason = body.get("suspension_reason", "").strip()
+    if not suspension_reason:
+        raise HTTPException(status_code=400, detail="suspension_reason is required")
+
+    ek = f"prod::{job_id}"
+    verdict_doc = await db.eval_verdicts.find_one({"eval_key": ek}, {"_id": 0})
+    if not verdict_doc or verdict_doc.get("human_verdict_s2") != "correct":
+        raise HTTPException(status_code=400, detail="Job must have S2 verdict marked as 'correct' before takedown")
+
+    disable_url = f"https://api.emergent.sh/jobs/v0/{job_id}/disable"
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header:
+        token = request.query_params.get("_token") or request.cookies.get("sb_token")
+        if token:
+            auth_header = f"Bearer {token}"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                disable_url,
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                json={"is_suspended": True, "suspension_reason": suspension_reason},
+            )
+            api_result = {"status_code": resp.status_code, "body": resp.text}
+            logger.info(f"TAKEDOWN API response for {job_id}: {resp.status_code} {resp.text[:200]}")
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Disable API returned {resp.status_code}: {resp.text[:300]}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TAKEDOWN API call failed for {job_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Disable API call failed: {str(e)}")
+
+    takedown_info = {
+        "taken_down_by": user.get("email", "unknown"),
+        "taken_down_by_name": user.get("name", ""),
+        "taken_down_by_user_id": user.get("user_id", ""),
+        "taken_down_at": datetime.now(timezone.utc).isoformat(),
+        "job_id": job_id,
+        "task_preview": body.get("task_preview", ""),
+        "s2_label": body.get("s2_label", ""),
+        "suspension_reason": suspension_reason,
+        "api_result": api_result,
+    }
+
+    await db.takedowns.insert_one({**takedown_info})
+    await db.eval_verdicts.update_one(
+        {"eval_key": ek},
+        {"$set": {"taken_down": True, "takedown_info": takedown_info}},
+        upsert=True,
+    )
+
+    # Log to BigQuery in background
+    log_takedown_to_bq({
+        "job_id": job_id,
+        "taken_down_by": user.get("email", "unknown"),
+        "taken_down_at": takedown_info["taken_down_at"],
+        "suspension_reason": suspension_reason,
+        "s2_label": body.get("s2_label", ""),
+        "task_preview": body.get("task_preview", ""),
+        "api_status_code": api_result.get("status_code"),
+        "is_test_mode": False,
+    })
+
+    return {"status": "ok", "takedown_info": takedown_info}
+
+
+@api_router.post("/test/takedown/{job_id}")
+async def test_takedown_job(job_id: str, request: Request):
+    """QA test takedown — calls the disable API directly without verdict checks."""
+    user = await get_current_user(request)
+    body = await request.json()
+
+    suspension_reason = body.get("suspension_reason", "").strip()
+    if not suspension_reason:
+        raise HTTPException(status_code=400, detail="suspension_reason is required")
+
+    disable_url = f"https://api.emergent.sh/jobs/v0/{job_id}/disable"
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header:
+        token = request.query_params.get("_token") or request.cookies.get("sb_token")
+        if token:
+            auth_header = f"Bearer {token}"
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            resp = await client.post(
+                disable_url,
+                headers={"Authorization": auth_header, "Content-Type": "application/json"},
+                json={"is_suspended": True, "suspension_reason": suspension_reason},
+            )
+            api_result = {"status_code": resp.status_code, "body": resp.text}
+            logger.info(f"TEST TAKEDOWN API response for {job_id}: {resp.status_code} {resp.text[:200]}")
+            if resp.status_code >= 400:
+                raise HTTPException(status_code=502, detail=f"Disable API returned {resp.status_code}: {resp.text[:300]}")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"TEST TAKEDOWN API call failed for {job_id}: {e}")
+        raise HTTPException(status_code=502, detail=f"Disable API call failed: {str(e)}")
+
+    takedown_info = {
+        "taken_down_by": user.get("email", "unknown"),
+        "taken_down_at": datetime.now(timezone.utc).isoformat(),
+        "job_id": job_id,
+        "suspension_reason": suspension_reason,
+        "api_result": api_result,
+        "test_mode": True,
+    }
+
+    await db.takedowns.insert_one({**takedown_info})
+
+    # Log to BigQuery in background
+    log_takedown_to_bq({
+        "job_id": job_id,
+        "taken_down_by": user.get("email", "unknown"),
+        "taken_down_at": takedown_info["taken_down_at"],
+        "suspension_reason": suspension_reason,
+        "s2_label": "",
+        "task_preview": "",
+        "api_status_code": api_result.get("status_code"),
+        "is_test_mode": True,
+    })
+
+    return {"status": "ok", "takedown_info": takedown_info}
+
+
+@api_router.get("/prod/takedowns")
+async def list_takedowns(request: Request):
+    """List all job takedowns."""
+    await get_current_user(request)
+    takedowns = await db.takedowns.find({}, {"_id": 0}).sort("taken_down_at", -1).to_list(500)
+    return {"takedowns": takedowns}
+
+
+@api_router.get("/prod/stats")
+async def prod_stats(request: Request):
+    """Stats computed entirely from MongoDB."""
+    await get_current_user(request)
+
+    try:
+        total = await db.bq_jobs.count_documents({})
+        in_flight = await db.bq_jobs.count_documents({"classification_label": None})
+        malicious = await db.bq_jobs.count_documents({"classification_label": "CONFIRMED_MALICIOUS"})
+
+        # Verdict counts from eval_verdicts
+        pipeline = [
+            {"$match": {"human_verdict_s2": {"$in": ["correct", "incorrect", "disputed"]}}},
+            {"$group": {"_id": "$human_verdict_s2", "count": {"$sum": 1}}},
+        ]
+        verdict_counts = {"correct": 0, "incorrect": 0, "disputed": 0}
+        async for doc in db.eval_verdicts.aggregate(pipeline):
+            verdict_counts[doc["_id"]] = doc["count"]
+
+        correct = verdict_counts["correct"]
+        incorrect = verdict_counts["incorrect"]
+        disputed = verdict_counts["disputed"]
+        untagged = max(0, total - correct - incorrect - disputed)
+
+        return {
+            "total": total,
+            "correct": correct,
+            "incorrect": incorrect,
+            "disputed": disputed,
+            "untagged": untagged,
+            "in_flight": in_flight,
+            "malicious": malicious,
+        }
+    except Exception as e:
+        logger.error(f"Stats query failed: {e}")
+        return {"total": 0, "correct": 0, "incorrect": 0, "disputed": 0, "untagged": 0, "in_flight": 0, "malicious": 0}
+
+
+@api_router.get("/prod/pending-review-count")
+async def pending_review_count(request: Request):
+    """Count NEEDS_HUMAN_REVIEW jobs without a verdict — from MongoDB."""
+    await get_current_user(request)
+
+    try:
+        review_docs = await db.bq_jobs.find(
+            {"classification_label": "NEEDS_HUMAN_REVIEW"},
+            {"_id": 0, "job_id": 1}
+        ).to_list(10000)
+        review_job_ids = [d["job_id"] for d in review_docs]
+        total_review = len(review_job_ids)
+
+        if total_review == 0:
+            return {"count": 0}
+
+        review_eval_keys = [f"prod::{jid}" for jid in review_job_ids]
+        reviewed_count = await db.eval_verdicts.count_documents({
+            "eval_key": {"$in": review_eval_keys},
+            "human_verdict_s2": {"$in": ["correct", "incorrect"]}
+        })
+
+        return {"count": max(0, total_review - reviewed_count)}
+    except Exception as e:
+        logger.error(f"Pending review count failed: {e}")
+        return {"count": 0}
+
+
+@api_router.get("/prod/analytics")
+async def prod_analytics(request: Request):
+    """Analytics computed from MongoDB bq_jobs."""
+    await get_current_user(request)
+
+    try:
+        # Daily S2 categorization
+        daily_pipeline = [
+            {"$addFields": {"day": {"$substr": ["$timestamp", 0, 10]}}},
+            {"$group": {
+                "_id": "$day",
+                "malicious": {"$sum": {"$cond": [{"$eq": ["$classification_label", "CONFIRMED_MALICIOUS"]}, 1, 0]}},
+                "review": {"$sum": {"$cond": [{"$eq": ["$classification_label", "NEEDS_HUMAN_REVIEW"]}, 1, 0]}},
+                "legit": {"$sum": {"$cond": [{"$eq": ["$classification_label", "LEGITIMATE"]}, 1, 0]}},
+                "no_s2": {"$sum": {"$cond": [{"$eq": [{"$ifNull": ["$classification_label", None]}, None]}, 1, 0]}},
+                "total": {"$sum": 1},
+            }},
+            {"$sort": {"_id": -1}},
+            {"$limit": 30},
+        ]
+        daily_rows = []
+        async for doc in db.bq_jobs.aggregate(daily_pipeline):
+            daily_rows.append({
+                "day": doc["_id"],
+                "malicious": doc["malicious"],
+                "review": doc["review"],
+                "legit": doc["legit"],
+                "no_s2": doc["no_s2"],
+                "total": doc["total"],
+            })
+
+        # S2 accuracy by label
+        accuracy = {}
+        for label in ["CONFIRMED_MALICIOUS", "NEEDS_HUMAN_REVIEW", "LEGITIMATE"]:
+            label_docs = await db.bq_jobs.find(
+                {"classification_label": label},
+                {"_id": 0, "job_id": 1}
+            ).to_list(10000)
+            label_job_ids = [d["job_id"] for d in label_docs]
+            label_total = len(label_job_ids)
+
+            correct = 0
+            incorrect = 0
+            if label_job_ids:
+                eval_keys = [f"prod::{jid}" for jid in label_job_ids]
+                verdict_docs = await db.eval_verdicts.find(
+                    {"eval_key": {"$in": eval_keys}},
+                    {"_id": 0, "human_verdict_s2": 1}
+                ).to_list(len(eval_keys))
+                correct = sum(1 for d in verdict_docs if d.get("human_verdict_s2") == "correct")
+                incorrect = sum(1 for d in verdict_docs if d.get("human_verdict_s2") == "incorrect")
+
+            accuracy[label] = {
+                "total": label_total,
+                "correct": correct,
+                "incorrect": incorrect,
+                "unmarked": max(0, label_total - correct - incorrect),
+            }
+
+        return {"daily": daily_rows, "accuracy": accuracy}
+    except Exception as e:
+        logger.error(f"Analytics query failed: {e}")
+        return {"daily": [], "accuracy": {}, "error": str(e)}
+
+
+@api_router.post("/admin/sync")
+async def admin_sync(request: Request, full: bool = Query(False)):
+    """Manual trigger for BQ → MongoDB sync."""
+    await get_current_user(request)
+    result = await run_bq_sync(full=full)
+    return result
+
+
+@api_router.get("/admin/sync-status")
+async def sync_status(request: Request):
+    """Get the last sync metadata."""
+    await get_current_user(request)
+    meta = await db.sync_metadata.find_one({"_id": "bq_sync"})
+    if meta:
+        meta.pop("_id", None)
+    return meta or {"status": "never_synced"}
+
+
+# ---- Eval API ----
+
+@api_router.get("/eval/jobs")
+async def eval_jobs_endpoint(request: Request):
+    await get_current_user(request)
+    config = await get_eval_config()
+    jobs = await db.eval_jobs.find({}, {"_id": 0}).to_list(5000)
+    return {"config": config, "jobs": jobs}
+
+
+@api_router.post("/eval/verdict/{eval_key:path}")
+async def eval_verdict(eval_key: str, request: Request):
+    await get_current_user(request)
+    body = await request.json()
+
+    update = {}
+    if "verdict_s1" in body:
+        update["human_verdict_s1"] = body["verdict_s1"]
+    if "verdict_wc" in body:
+        update["human_verdict_wc"] = body["verdict_wc"]
+    if "verdict_s2" in body:
+        update["human_verdict_s2"] = body["verdict_s2"]
+    if "notes" in body:
+        update["human_notes"] = body["notes"]
+
+    if update:
+        result = await db.eval_jobs.update_one({"eval_key": eval_key}, {"$set": update})
+        if result.matched_count == 0:
+            return {"error": f"No eval entry found for key: {eval_key}"}
+
+    return {"status": "ok", "eval_key": eval_key}
+
+
+@api_router.post("/eval/config")
+async def eval_config_endpoint(request: Request):
+    await get_current_user(request)
+    body = await request.json()
+    await db.eval_config.update_one({"_id": "global"}, {"$set": body}, upsert=True)
+    return {"status": "ok"}
+
+
+# ---- Trace Retrieval ----
+
+@api_router.get("/trace/{job_id}")
+async def get_job_trace(job_id: str, request: Request):
+    await get_current_user(request)
+    trace = await db.pipeline_traces.find_one({"job_id": job_id}, {"_id": 0})
+    if not trace:
+        return {"error": f"No trace found for job_id: {job_id}"}
+    return trace
+
+
+@api_router.get("/traces")
+async def list_traces(request: Request):
+    await get_current_user(request)
+    traces = await db.pipeline_traces.find({}, {"_id": 0}).to_list(1000)
+    summaries = []
+    for trace in traces:
+        s1 = trace.get("stage_1_classifier")
+        s2 = trace.get("stage_2_escalation")
+        summaries.append({
+            "job_id": trace.get("job_id"),
+            "created_at": trace.get("created_at"),
+            "stage_1_complete": s1 is not None,
+            "stage_2_complete": s2 is not None,
+            "stage_1_result": s1.get("classification", {}).get("result") if s1 else None,
+            "stage_2_label": s2.get("result", {}).get("classification", {}).get("label") if s2 else None,
+        })
+    return {"traces": summaries, "total": len(summaries)}
+
+
+@api_router.post("/alert")
+async def mongo_alert_webhook(request: Request):
+    raw_body = await request.body()
+    logger.info(f"Alert webhook received: {raw_body}")
+    return {"status": "verified"}
+
+
+# ---- Seed Data ----
+
+@app.on_event("startup")
+async def seed_data():
+    """Seed existing eval_results.json into MongoDB if collections are empty."""
+    count = await db.eval_jobs.count_documents({})
+    if count > 0:
+        return
+
+    seed_file = ROOT_DIR / "eval_results_seed.json"
+    if not seed_file.exists():
+        return
+
+    try:
+        data = json.loads(seed_file.read_text())
+        config = data.get("config", {})
+        await db.eval_config.update_one({"_id": "global"}, {"$set": config}, upsert=True)
+
+        jobs = data.get("jobs", {})
+        if jobs:
+            docs = []
+            for key, job in jobs.items():
+                job["eval_key"] = key
+                docs.append(job)
+            if docs:
+                await db.eval_jobs.insert_many(docs)
+                logger.info(f"Seeded {len(docs)} eval jobs into MongoDB")
+    except Exception as e:
+        logger.error(f"Failed to seed data: {e}")
+
+
+@app.on_event("startup")
+async def start_bq_sync():
+    """Start the BigQuery → MongoDB background sync loop."""
+    asyncio.create_task(bq_sync_loop())
+
+
+# ---- Mount Router ----
+
+app.include_router(api_router)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+@app.on_event("shutdown")
+async def shutdown_db_client():
+    mongo_client.close()

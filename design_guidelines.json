@@ -1,0 +1,170 @@
+{
+  "identity": {
+    "name": "E1 - The Anti-AI Designer",
+    "tone": "Cyber-Security / Ops Center / Terminal / Precision",
+    "description": "A high-density, dark-mode-first interface for security professionals. Prioritizes data scanning speed, monospace typography, and high-contrast status indicators over decorative elements. No soft shadows, no rounded corners larger than 4px.",
+    "mission": "Create a tool that feels like a powerful CLI with a GUI layer. Fast, responsive, and dense."
+  },
+  "typography": {
+    "primary_font": "JetBrains Mono",
+    "secondary_font": "Inter",
+    "weights": {
+      "light": 300,
+      "regular": 400,
+      "medium": 500,
+      "bold": 700
+    },
+    "scale": {
+      "xs": "0.75rem",
+      "sm": "0.875rem",
+      "base": "1rem",
+      "lg": "1.125rem",
+      "xl": "1.25rem",
+      "2xl": "1.5rem",
+      "3xl": "1.875rem",
+      "4xl": "2.25rem"
+    },
+    "usage": {
+      "headings": "JetBrains Mono, Uppercase, tracking-wider",
+      "body": "Inter (for long descriptions) or JetBrains Mono (for data/code)",
+      "data_cells": "JetBrains Mono, text-xs or text-sm",
+      "code_blocks": "JetBrains Mono"
+    }
+  },
+  "colors": {
+    "theme": "dark",
+    "palette": {
+      "background": "#09090B",
+      "surface": "#18181B",
+      "surface_highlight": "#27272A",
+      "border": "#27272A",
+      "text_primary": "#FAFAFA",
+      "text_secondary": "#A1A1AA",
+      "text_tertiary": "#71717A",
+      "accent_primary": "#10B981",
+      "accent_danger": "#EF4444",
+      "accent_warning": "#F59E0B",
+      "accent_info": "#3B82F6",
+      "selection": "rgba(16, 185, 129, 0.2)"
+    },
+    "status": {
+      "safe": {
+        "bg": "rgba(16, 185, 129, 0.1)",
+        "text": "#34D399",
+        "border": "#059669"
+      },
+      "phishing": {
+        "bg": "rgba(239, 68, 68, 0.1)",
+        "text": "#F87171",
+        "border": "#B91C1C"
+      },
+      "suspicious": {
+        "bg": "rgba(245, 158, 11, 0.1)",
+        "text": "#FBBF24",
+        "border": "#D97706"
+      }
+    }
+  },
+  "layout": {
+    "grid_system": "Bento Grid - High Density Mode",
+    "spacing": {
+      "container_padding": "p-4 md:p-6",
+      "element_gap": "gap-2 or gap-3",
+      "section_gap": "gap-6"
+    },
+    "structure": {
+      "dashboard": "Header (Stats) + Main Content (Table) + Sidebar/Overlay (Analytics)",
+      "table": "Sticky Header, Fixed Height Rows, Horizontal Scroll for extra columns",
+      "filters": "Top Bar, Compact Inputs"
+    }
+  },
+  "components": {
+    "buttons": {
+      "style": "Sharp edges or rounded-sm (2px). No pill shapes.",
+      "variants": {
+        "primary": "bg-primary text-primary-foreground hover:bg-primary/90 border border-primary/20 shadow-[0_0_10px_rgba(16,185,129,0.2)]",
+        "secondary": "bg-secondary text-secondary-foreground hover:bg-secondary/80 border border-border",
+        "ghost": "hover:bg-accent hover:text-accent-foreground",
+        "destructive": "bg-destructive text-destructive-foreground hover:bg-destructive/90 border border-destructive/20"
+      }
+    },
+    "cards": {
+      "style": "bg-card border border-border rounded-md shadow-none",
+      "header": "border-b border-border p-3",
+      "content": "p-3"
+    },
+    "inputs": {
+      "style": "bg-background border-border focus:ring-1 focus:ring-primary rounded-sm font-mono text-sm h-8"
+    },
+    "badges": {
+      "style": "inline-flex items-center rounded-sm border px-2 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 font-mono uppercase tracking-wide"
+    },
+    "table": {
+      "style": "w-full caption-bottom text-sm font-mono",
+      "header": "border-b h-10 px-2 text-left align-middle font-medium text-muted-foreground",
+      "row": "border-b transition-colors hover:bg-muted/50 data-[state=selected]:bg-muted",
+      "cell": "p-2 align-middle"
+    }
+  },
+  "visual_enhancers": {
+    "borders": "1px solid #27272A (Zinc 800)",
+    "shadows": "None or hard-edged (shadow-sm)",
+    "textures": "Subtle scanline overlay (pointer-events-none fixed inset-0 z-50 bg-[url('https://grainy-gradients.vercel.app/noise.svg')] opacity-[0.03])",
+    "glow": "Use drop-shadow for active states (e.g., drop-shadow-[0_0_8px_rgba(16,185,129,0.5)])"
+  },
+  "motion": {
+    "speed": "Fast (duration-100 or duration-150)",
+    "easing": "ease-out",
+    "types": {
+      "hover": "color change, border color change",
+      "modal": "scale-95 to scale-100, opacity-0 to opacity-100",
+      "accordion": "height transition"
+    }
+  },
+  "accessibility": {
+    "focus_states": "Visible ring-2 ring-primary ring-offset-2 ring-offset-background",
+    "contrast": "Ensure text is #FAFAFA on dark backgrounds (APCA/WCAG AAA)",
+    "aria_labels": "Required for all icon-only buttons"
+  },
+  "icons": {
+    "library": "lucide-react",
+    "style": "Stroke width 1.5px or 2px, depending on size. Sharp endpoints if possible.",
+    "mapping": {
+      "dashboard": "LayoutDashboard",
+      "analytics": "BarChart3",
+      "settings": "Settings",
+      "filter": "Filter",
+      "search": "Search",
+      "user": "User",
+      "alert": "AlertTriangle",
+      "check": "CheckCircle2",
+      "x": "XCircle",
+      "info": "Info",
+      "download": "Download",
+      "chevron_down": "ChevronDown",
+      "chevron_right": "ChevronRight",
+      "expand": "Maximize2",
+      "collapse": "Minimize2"
+    }
+  },
+  "universal_guidelines": {
+    "grid_alignment": "Align all containers to a 4px baseline grid.",
+    "density": "Compact. Avoid excessive whitespace in data tables.",
+    "feedback": "Show toast notifications for all actions (success/error).",
+    "error_handling": "Inline validation for forms. Global error boundary for crashes.",
+    "loading_states": "Skeleton loaders for tables (animate-pulse bg-muted).",
+    "data_testid": "All interactive elements MUST have a unique data-testid attribute."
+  },
+  "instructions_to_main_agent": [
+    "1. Install 'lucide-react' and 'recharts' if not present.",
+    "2. Configure Tailwind for 'JetBrains Mono' font family (add to theme.extend.fontFamily).",
+    "3. Create a 'Layout' component that handles the Sidebar/Header structure.",
+    "4. Implement the 'DataTable' component using TanStack Table (or similar manual implementation) for virtualization if row count is high (>100).",
+    "5. Use 'recharts' for the Analytics Panel (LineChart, BarChart).",
+    "6. Ensure the 'Production' vs 'Eval' mode toggle is prominent in the header.",
+    "7. Implement the 'JobDetails' drawer/sheet as an overlay or expandable row.",
+    "8. Use 'sonner' for toasts.",
+    "9. STRICTLY follow the dark mode color palette defined above.",
+    "10. Do not use gradients for backgrounds. Use solid colors or subtle noise textures."
+  ]
+}

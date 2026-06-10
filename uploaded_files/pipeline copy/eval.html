@@ -1,0 +1,1403 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Phishing Pipeline — Eval Playground</title>
+<style>
+  :root {
+    --bg: #0f1117;
+    --surface: #1a1d28;
+    --surface2: #232736;
+    --border: #2e3348;
+    --text: #e1e4ed;
+    --text2: #8b90a5;
+    --accent: #6c7bf7;
+    --green: #34d399;
+    --red: #f87171;
+    --yellow: #fbbf24;
+    --orange: #fb923c;
+    --cyan: #22d3ee;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', monospace;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    line-height: 1.5;
+  }
+
+  /* ── Header ── */
+  .header {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 12px 24px;
+    display: flex;
+    align-items: center;
+    gap: 24px;
+    position: sticky;
+    top: 0;
+    z-index: 100;
+  }
+  .header h1 {
+    font-size: 15px;
+    font-weight: 600;
+    white-space: nowrap;
+    color: var(--accent);
+  }
+  .prompt-versions {
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+  .prompt-versions label {
+    font-size: 11px;
+    color: var(--text2);
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+  .prompt-versions input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+    width: 80px;
+  }
+  .prompt-versions input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  .btn {
+    background: var(--accent);
+    color: #fff;
+    border: none;
+    padding: 5px 14px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+  }
+  .btn:hover { opacity: 0.85; }
+  .btn-sm { padding: 3px 10px; font-size: 11px; }
+  .btn-outline {
+    background: transparent;
+    border: 1px solid var(--border);
+    color: var(--text2);
+  }
+  .btn-outline:hover { border-color: var(--accent); color: var(--text); }
+
+  /* ── Mode Toggle ── */
+  .mode-toggle {
+    display: flex;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    overflow: hidden;
+  }
+  .mode-toggle button {
+    background: transparent;
+    border: none;
+    color: var(--text2);
+    padding: 5px 14px;
+    font-family: inherit;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all 0.15s;
+  }
+  .mode-toggle button:hover { color: var(--text); }
+  .mode-toggle button.active {
+    background: var(--accent);
+    color: #fff;
+  }
+  .show-more-wrap {
+    text-align: center;
+    padding: 16px 24px;
+  }
+  .show-more-wrap .btn { min-width: 160px; }
+  .header-right {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .live-dot {
+    width: 8px; height: 8px;
+    background: var(--green);
+    border-radius: 50%;
+    animation: pulse 2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.3; }
+  }
+
+  /* ── Stats Bar ── */
+  .stats-bar {
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 8px 24px;
+    display: flex;
+    gap: 24px;
+    font-size: 12px;
+  }
+  .stat {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .stat-count {
+    font-weight: 700;
+    font-size: 16px;
+  }
+  .stat-label { color: var(--text2); }
+
+  /* ── Filters ── */
+  .filters {
+    padding: 10px 24px;
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+  .filter-chip {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text2);
+    padding: 3px 12px;
+    border-radius: 16px;
+    cursor: pointer;
+    font-size: 11px;
+    font-family: inherit;
+    transition: all 0.15s;
+  }
+  .filter-chip:hover { border-color: var(--accent); color: var(--text); }
+  .filter-chip.active {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: #fff;
+  }
+
+  /* ── Table ── */
+  .table-wrap {
+    padding: 0 24px 24px;
+  }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+  }
+  thead th {
+    text-align: left;
+    padding: 10px 12px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 90px;
+    background: var(--bg);
+    z-index: 10;
+  }
+  tbody tr {
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  tbody tr:hover { background: var(--surface); }
+  tbody tr.expanded { background: var(--surface); }
+  td {
+    padding: 10px 12px;
+    vertical-align: middle;
+  }
+  .job-id {
+    font-size: 11px;
+    color: var(--cyan);
+    font-weight: 500;
+  }
+  .task-text {
+    max-width: 500px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: 12px;
+  }
+
+  /* ── Tags / Badges ── */
+  .badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+  }
+  .badge-phishing { background: rgba(248,113,113,0.15); color: var(--red); }
+  .badge-legit { background: rgba(52,211,153,0.15); color: var(--green); }
+  .badge-review { background: rgba(251,191,36,0.15); color: var(--yellow); }
+  .badge-malicious { background: rgba(248,113,113,0.25); color: var(--red); }
+  .badge-pending { background: rgba(139,144,165,0.15); color: var(--text2); }
+  .badge-running { background: rgba(108,123,247,0.15); color: var(--accent); }
+
+  /* ── Verdict Select ── */
+  .verdict-select {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 4px 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 11px;
+    cursor: pointer;
+  }
+  .verdict-select:focus { outline: none; border-color: var(--accent); }
+  .verdict-select.v-correct { border-color: var(--green); color: var(--green); }
+  .verdict-select.v-incorrect { border-color: var(--red); color: var(--red); }
+  .verdict-select.v-disputed { border-color: var(--orange); color: var(--orange); }
+
+  /* ── Expanded Detail ── */
+  .detail-row { display: none; }
+  .detail-row.show { display: table-row; }
+  .detail-row td {
+    padding: 0;
+    background: var(--surface);
+  }
+  .detail-panel {
+    padding: 16px 20px;
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .detail-section {
+    background: var(--surface2);
+    border-radius: 6px;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+  }
+  .detail-section h3 {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--accent);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 8px;
+  }
+  .detail-section.full-width {
+    grid-column: 1 / -1;
+  }
+  .detail-kv {
+    display: flex;
+    gap: 8px;
+    margin-bottom: 4px;
+    font-size: 12px;
+  }
+  .detail-kv .k {
+    color: var(--text2);
+    min-width: 100px;
+    flex-shrink: 0;
+  }
+  .detail-kv .v { word-break: break-word; }
+
+  /* Harm grid */
+  .harm-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 6px;
+  }
+  .harm-item {
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 4px;
+    background: var(--bg);
+  }
+  .harm-item.detected { background: rgba(248,113,113,0.1); color: var(--red); }
+  .harm-item.clear { color: var(--text2); }
+
+  /* JSON viewer */
+  .json-toggle {
+    font-size: 11px;
+    color: var(--accent);
+    cursor: pointer;
+    margin-top: 8px;
+    display: inline-block;
+  }
+  .json-toggle:hover { text-decoration: underline; }
+  .json-content {
+    display: none;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 12px;
+    margin-top: 8px;
+    max-height: 400px;
+    overflow: auto;
+    font-size: 11px;
+    white-space: pre-wrap;
+    color: var(--text2);
+  }
+  .json-content.show { display: block; }
+
+  /* Notes */
+  .notes-input {
+    width: 100%;
+    background: var(--bg);
+    border: 1px solid var(--border);
+    color: var(--text);
+    padding: 8px;
+    border-radius: 4px;
+    font-family: inherit;
+    font-size: 12px;
+    resize: vertical;
+    min-height: 60px;
+    margin-top: 6px;
+  }
+  .notes-input:focus { outline: none; border-color: var(--accent); }
+
+  /* ── Empty State ── */
+  .empty-state {
+    text-align: center;
+    padding: 80px 24px;
+    color: var(--text2);
+  }
+  .empty-state h2 { font-size: 16px; margin-bottom: 8px; color: var(--text); }
+
+  /* ── Analytics Panel ── */
+  .analytics-panel {
+    display: none;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    padding: 16px 24px;
+  }
+  .analytics-panel.show { display: block; }
+  .analytics-panel h2 {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--accent);
+    margin-bottom: 12px;
+  }
+  .analytics-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 16px;
+  }
+  .analytics-card {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 12px 16px;
+  }
+  .analytics-card h3 {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 10px;
+  }
+  .analytics-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 12px;
+  }
+  .analytics-table th {
+    text-align: left;
+    padding: 4px 8px;
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text2);
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+    border-bottom: 1px solid var(--border);
+  }
+  .analytics-table td {
+    padding: 5px 8px;
+    border-bottom: 1px solid rgba(46,51,72,0.5);
+  }
+  .acc-bar {
+    display: inline-block;
+    height: 6px;
+    border-radius: 3px;
+    margin-left: 6px;
+    vertical-align: middle;
+  }
+  .big-num {
+    font-size: 28px;
+    font-weight: 700;
+    line-height: 1;
+  }
+  .big-label {
+    font-size: 11px;
+    color: var(--text2);
+    margin-top: 4px;
+  }
+  .metric-row {
+    display: flex;
+    gap: 24px;
+    margin-bottom: 8px;
+  }
+  .metric-item { text-align: center; }
+
+  /* ── Loading Overlay ── */
+  .loading-overlay {
+    display: none;
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 17, 23, 0.7);
+    z-index: 999;
+    justify-content: center;
+    align-items: center;
+  }
+  .loading-overlay.show { display: flex; }
+  .loading-box {
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px 40px;
+    text-align: center;
+  }
+  .loading-spinner {
+    width: 28px; height: 28px;
+    border: 3px solid var(--border);
+    border-top-color: var(--accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+    margin: 0 auto 12px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .loading-box span {
+    font-size: 13px;
+    color: var(--text2);
+  }
+
+  /* ── Scrollbar ── */
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text2); }
+</style>
+</head>
+<body>
+
+<!-- Loading Overlay -->
+<div class="loading-overlay" id="loading-overlay">
+  <div class="loading-box">
+    <div class="loading-spinner"></div>
+    <span>Loading from BigQuery...</span>
+  </div>
+</div>
+
+<!-- Header -->
+<div class="header">
+  <h1>Phishing Eval</h1>
+  <div class="mode-toggle">
+    <button id="mode-prod" class="active" onclick="switchMode('production')">Production</button>
+    <button id="mode-eval" onclick="switchMode('eval')">Eval</button>
+  </div>
+  <div class="prompt-versions" id="prompt-versions">
+    <label>LLM Classifier <input type="text" id="cfg-llm" placeholder="v1.0"></label>
+    <label>Escalation Agent <input type="text" id="cfg-agent" placeholder="v1.0"></label>
+    <label>User Message <input type="text" id="cfg-msg" placeholder="v1.0"></label>
+    <button class="btn btn-sm" onclick="saveConfig()">Save Versions</button>
+  </div>
+  <div class="header-right">
+    <button class="btn btn-sm btn-outline" onclick="toggleAnalytics()">Analytics</button>
+    <button class="btn btn-sm btn-outline" onclick="exportCSV()">Export CSV</button>
+    <button class="btn btn-sm btn-outline" onclick="currentMode === 'production' ? fetchProdJobs(false) : fetchJobs()">Refresh</button>
+    <div class="live-dot" id="live-dot" title="Auto-refresh active"></div>
+  </div>
+</div>
+
+<!-- Stats -->
+<div class="stats-bar" id="stats-bar">
+  <div class="stat"><span class="stat-count" id="st-total">0</span><span class="stat-label">total</span></div>
+  <div class="stat"><span class="stat-count" id="st-correct" style="color:var(--green)">0</span><span class="stat-label">correct</span></div>
+  <div class="stat"><span class="stat-count" id="st-incorrect" style="color:var(--red)">0</span><span class="stat-label">incorrect</span></div>
+  <div class="stat"><span class="stat-count" id="st-disputed" style="color:var(--orange)">0</span><span class="stat-label">disputed</span></div>
+  <div class="stat"><span class="stat-count" id="st-untagged" style="color:var(--text2)">0</span><span class="stat-label">untagged</span></div>
+  <div class="stat"><span class="stat-count" id="st-running" style="color:var(--accent)">0</span><span class="stat-label">in-flight</span></div>
+</div>
+
+<!-- Analytics Panel (toggle) -->
+<div class="analytics-panel" id="analytics-panel">
+  <div class="analytics-grid">
+    <div class="analytics-card">
+      <h3>S1 / WC Accuracy vs S2 Ground Truth</h3>
+      <p style="font-size:11px;color:var(--text2);margin-bottom:8px">
+        When S2 is marked <strong>correct</strong> by human, S2's label is treated as ground truth.
+        S1/WC accuracy = how often they agree with S2.
+      </p>
+      <table class="analytics-table" id="accuracy-table">
+        <thead>
+          <tr>
+            <th>Prompt Version (S1 / S2)</th>
+            <th>Samples</th>
+            <th>S1 Accuracy</th>
+            <th>WC Accuracy</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+      <div id="accuracy-empty" style="color:var(--text2);font-size:12px;padding:12px 0;text-align:center;display:none">
+        No S2 human verdicts yet. Mark S2 as "Correct" to establish ground truth.
+      </div>
+    </div>
+    <div class="analytics-card">
+      <h3>S2 Error Tracking</h3>
+      <div class="metric-row" id="s2-error-metrics">
+        <div class="metric-item">
+          <div class="big-num" id="s2-total-judged" style="color:var(--text)">0</div>
+          <div class="big-label">S2 judged</div>
+        </div>
+        <div class="metric-item">
+          <div class="big-num" id="s2-correct-count" style="color:var(--green)">0</div>
+          <div class="big-label">correct</div>
+        </div>
+        <div class="metric-item">
+          <div class="big-num" id="s2-incorrect-count" style="color:var(--red)">0</div>
+          <div class="big-label">incorrect</div>
+        </div>
+        <div class="metric-item">
+          <div class="big-num" id="s2-disputed-count" style="color:var(--orange)">0</div>
+          <div class="big-label">disputed</div>
+        </div>
+        <div class="metric-item">
+          <div class="big-num" id="s2-accuracy-pct" style="color:var(--cyan)">—</div>
+          <div class="big-label">S2 accuracy</div>
+        </div>
+      </div>
+      <h3 style="margin-top:12px">S2 Errors by Version</h3>
+      <table class="analytics-table" id="s2-error-table">
+        <thead>
+          <tr>
+            <th>Prompt Version (S2)</th>
+            <th>Correct</th>
+            <th>Incorrect</th>
+            <th>Disputed</th>
+            <th>Accuracy</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Filters (eval mode) -->
+<div class="filters" id="filters-eval" style="display:none">
+  <button class="filter-chip active" data-filter="all" onclick="setFilter('all',this)">All</button>
+  <button class="filter-chip" data-filter="untagged" onclick="setFilter('untagged',this)">Untagged</button>
+  <button class="filter-chip" data-filter="correct" onclick="setFilter('correct',this)">Correct</button>
+  <button class="filter-chip" data-filter="incorrect" onclick="setFilter('incorrect',this)">Incorrect</button>
+  <button class="filter-chip" data-filter="disputed" onclick="setFilter('disputed',this)">Disputed</button>
+  <button class="filter-chip" data-filter="phishing" onclick="setFilter('phishing',this)">S1: Phishing</button>
+  <button class="filter-chip" data-filter="legit" onclick="setFilter('legit',this)">S1: Legit</button>
+  <button class="filter-chip" data-filter="wc_flagged" onclick="setFilter('wc_flagged',this)">WC: Flagged</button>
+  <button class="filter-chip" data-filter="wc_clear" onclick="setFilter('wc_clear',this)">WC: Clear</button>
+  <button class="filter-chip" data-filter="disagree" onclick="setFilter('disagree',this)">S1 vs WC Disagree</button>
+  <button class="filter-chip" data-filter="malicious" onclick="setFilter('malicious',this)">S2: Malicious</button>
+  <button class="filter-chip" data-filter="review" onclick="setFilter('review',this)">S2: Review</button>
+</div>
+<!-- Filters (production mode) — S2 multi-select -->
+<div class="filters" id="filters-prod">
+  <span style="color:var(--text2);font-size:11px;padding:3px 0">S2 Label:</span>
+  <button class="filter-chip active" data-s2="all" onclick="toggleProdS2Filter('all',this)">All</button>
+  <button class="filter-chip" data-s2="CONFIRMED_MALICIOUS" onclick="toggleProdS2Filter('CONFIRMED_MALICIOUS',this)">Confirmed Malicious</button>
+  <button class="filter-chip" data-s2="NEEDS_HUMAN_REVIEW" onclick="toggleProdS2Filter('NEEDS_HUMAN_REVIEW',this)">Needs Manual Review</button>
+  <button class="filter-chip" data-s2="LEGITIMATE" onclick="toggleProdS2Filter('LEGITIMATE',this)">Legitimate</button>
+  <span style="color:var(--text2);font-size:11px;padding:3px 0;margin-left:12px">Verdict:</span>
+  <button class="filter-chip" data-s2="untagged" onclick="toggleProdS2Filter('untagged',this)">Untagged</button>
+  <button class="filter-chip" data-s2="correct" onclick="toggleProdS2Filter('correct',this)">Correct</button>
+  <button class="filter-chip" data-s2="incorrect" onclick="toggleProdS2Filter('incorrect',this)">Incorrect</button>
+  <button class="filter-chip" data-s2="disputed" onclick="toggleProdS2Filter('disputed',this)">Disputed</button>
+</div>
+
+<!-- Table -->
+<div class="table-wrap">
+  <table>
+    <thead id="table-head">
+    </thead>
+    <tbody id="jobs-tbody"></tbody>
+  </table>
+  <div class="empty-state" id="empty-state">
+    <h2>No pipeline runs yet</h2>
+    <p id="empty-text">Run <code>python classifier.py &lt;job_id&gt;</code> to start evaluating</p>
+  </div>
+</div>
+<div class="show-more-wrap" id="show-more-wrap" style="display:none">
+  <button class="btn" id="show-more-btn" onclick="loadMoreProd()">Show More</button>
+</div>
+
+<script>
+const API = window.location.origin + '/api';
+let jobs = {};
+let currentFilter = 'all';
+let expandedKey = null;
+let refreshInterval = null;
+
+// ── Mode State ──
+let currentMode = 'production';   // 'production' | 'eval'
+let prodJobs = [];
+let prodOffset = 0;
+let prodHasMore = false;
+let prodLoading = false;
+const PROD_PAGE_SIZE = 20;
+let prodS2Filters = new Set(['all']);  // multi-select: 'all' | S2 labels | verdict filters
+
+// ── Mode Switch ──
+
+function switchMode(mode) {
+  if (mode === currentMode) return;
+  currentMode = mode;
+  expandedKey = null;
+
+  // Toggle button states
+  document.getElementById('mode-prod').classList.toggle('active', mode === 'production');
+  document.getElementById('mode-eval').classList.toggle('active', mode === 'eval');
+
+  // Toggle prompt versions (only relevant in eval mode)
+  document.getElementById('prompt-versions').style.display = mode === 'eval' ? 'flex' : 'none';
+
+  // Toggle live dot (only eval auto-polls)
+  document.getElementById('live-dot').style.display = mode === 'eval' ? 'block' : 'none';
+
+  // Toggle filter bars
+  document.getElementById('filters-eval').style.display = mode === 'eval' ? 'flex' : 'none';
+  document.getElementById('filters-prod').style.display = mode === 'production' ? 'flex' : 'none';
+
+  // Reset filters
+  currentFilter = 'all';
+  prodS2Filters = new Set(['all']);
+
+  // Clear & fetch
+  if (mode === 'production') {
+    clearInterval(refreshInterval);
+    refreshInterval = null;
+    prodJobs = [];
+    prodOffset = 0;
+    jobs = {};
+    fetchProdJobs(false);
+  } else {
+    document.getElementById('show-more-wrap').style.display = 'none';
+    fetchJobs();
+    refreshInterval = setInterval(fetchJobs, 3000);
+  }
+}
+
+// ── Eval Fetch ──
+
+async function fetchJobs() {
+  try {
+    const res = await fetch(`${API}/eval/jobs`);
+    const data = await res.json();
+    jobs = {};
+    (data.jobs || []).forEach(j => jobs[j.eval_key || j.job_id] = j);
+    if (data.config) {
+      document.getElementById('cfg-llm').value = data.config.llm_classifier_prompt_version || '';
+      document.getElementById('cfg-agent').value = data.config.escalation_agent_prompt_version || '';
+      document.getElementById('cfg-msg').value = data.config.user_message_prompt_version || '';
+    }
+    render();
+  } catch(e) {
+    console.error('Fetch failed:', e);
+  }
+}
+
+// ── Production Fetch ──
+
+function buildProdQueryString() {
+  let qs = `offset=${prodOffset}&limit=${PROD_PAGE_SIZE}`;
+  // Collect active S2 label filters (skip 'all' and verdict filters)
+  const labelValues = ['CONFIRMED_MALICIOUS','NEEDS_HUMAN_REVIEW','LEGITIMATE'];
+  const activeLabels = labelValues.filter(l => prodS2Filters.has(l));
+  if (activeLabels.length > 0) {
+    qs += `&s2_labels=${activeLabels.join(',')}`;
+  }
+  return qs;
+}
+
+async function fetchProdJobs(append) {
+  if (prodLoading) return;
+  prodLoading = true;
+  const overlay = document.getElementById('loading-overlay');
+  const btn = document.getElementById('show-more-btn');
+  if (!append) overlay.classList.add('show');
+  if (btn) btn.textContent = 'Loading...';
+
+  try {
+    const res = await fetch(`${API}/prod/jobs?${buildProdQueryString()}`);
+    const data = await res.json();
+    if (data.error) {
+      console.error('Prod fetch error:', data.error);
+      prodLoading = false;
+      overlay.classList.remove('show');
+      if (btn) btn.textContent = 'Show More';
+      return;
+    }
+
+    if (append) {
+      prodJobs = prodJobs.concat(data.jobs || []);
+    } else {
+      prodJobs = data.jobs || [];
+    }
+    prodHasMore = data.has_more || false;
+
+    jobs = {};
+    prodJobs.forEach(j => jobs[j.eval_key || j.job_id] = j);
+
+    document.getElementById('show-more-wrap').style.display = prodHasMore ? 'block' : 'none';
+    if (btn) btn.textContent = 'Show More';
+
+    render();
+  } catch(e) {
+    console.error('Prod fetch failed:', e);
+    if (btn) btn.textContent = 'Show More';
+  }
+  overlay.classList.remove('show');
+  prodLoading = false;
+}
+
+function loadMoreProd() {
+  prodOffset += PROD_PAGE_SIZE;
+  fetchProdJobs(true);
+}
+
+// ── Production S2 Multi-Select Filter ──
+
+function toggleProdS2Filter(value, el) {
+  const labelValues = ['CONFIRMED_MALICIOUS','NEEDS_HUMAN_REVIEW','LEGITIMATE'];
+  const verdictValues = ['untagged','correct','incorrect','disputed'];
+
+  if (value === 'all') {
+    prodS2Filters = new Set(['all']);
+    document.querySelectorAll('#filters-prod .filter-chip').forEach(c => c.classList.remove('active'));
+    el.classList.add('active');
+  } else {
+    prodS2Filters.delete('all');
+    document.querySelector('#filters-prod [data-s2="all"]').classList.remove('active');
+
+    if (prodS2Filters.has(value)) {
+      prodS2Filters.delete(value);
+      el.classList.remove('active');
+    } else {
+      prodS2Filters.add(value);
+      el.classList.add('active');
+    }
+
+    if (prodS2Filters.size === 0) {
+      prodS2Filters = new Set(['all']);
+      document.querySelector('#filters-prod [data-s2="all"]').classList.add('active');
+    }
+  }
+
+  // S2 label filters → server-side re-fetch; verdict filters → client-side only
+  const hasLabelFilter = labelValues.some(l => prodS2Filters.has(l));
+  const hadLabelFilter = labelValues.some(l => !prodS2Filters.has(l)); // always re-fetch on label change
+  if (labelValues.includes(value) || value === 'all') {
+    // Label filter changed — reset and re-fetch from BQ
+    prodOffset = 0;
+    prodJobs = [];
+    jobs = {};
+    fetchProdJobs(false);
+  } else {
+    // Verdict filter — client-side only
+    render();
+  }
+}
+
+function renderTableHead() {
+  const thead = document.getElementById('table-head');
+  if (currentMode === 'production') {
+    thead.innerHTML = `<tr>
+      <th style="width:310px">Job ID</th>
+      <th>Task</th>
+      <th style="width:110px">S1 Classifier</th>
+      <th style="width:160px">S2 Agent</th>
+      <th style="width:100px">S2 Verdict</th>
+      <th style="width:90px">Versions</th>
+    </tr>`;
+  } else {
+    thead.innerHTML = `<tr>
+      <th style="width:310px">Job ID</th>
+      <th>Task</th>
+      <th style="width:110px">S1 Classifier</th>
+      <th style="width:100px">S1 Verdict</th>
+      <th style="width:100px">WhiteCircle</th>
+      <th style="width:100px">WC Verdict</th>
+      <th style="width:130px">S2 Agent</th>
+      <th style="width:100px">S2 Verdict</th>
+      <th style="width:90px">Versions</th>
+      <th style="width:70px">Time</th>
+    </tr>`;
+  }
+}
+
+function render() {
+  renderTableHead();
+  const isProd = currentMode === 'production';
+  const tbody = document.getElementById('jobs-tbody');
+  const empty = document.getElementById('empty-state');
+  const jobList = Object.values(jobs).sort((a,b) => (b.created_at||'').localeCompare(a.created_at||''));
+
+  // Stats — count each verdict tag across both S1 and S2
+  let stats = { total: 0, correct: 0, incorrect: 0, disputed: 0, untagged: 0, running: 0 };
+  jobList.forEach(j => {
+    stats.total++;
+    const vs1 = j.human_verdict_s1;
+    const vs2 = j.human_verdict_s2;
+    if (vs1 === 'correct' || vs2 === 'correct') stats.correct++;
+    if (vs1 === 'incorrect' || vs2 === 'incorrect') stats.incorrect++;
+    if (vs1 === 'disputed' || vs2 === 'disputed') stats.disputed++;
+    if (!vs1 && !vs2) stats.untagged++;
+    if (j.stage_1 && !j.stage_2 && j.stage_1.classification?.result) stats.running++;
+  });
+  document.getElementById('st-total').textContent = stats.total;
+  document.getElementById('st-correct').textContent = stats.correct;
+  document.getElementById('st-incorrect').textContent = stats.incorrect;
+  document.getElementById('st-disputed').textContent = stats.disputed;
+  document.getElementById('st-untagged').textContent = stats.untagged;
+  document.getElementById('st-running').textContent = stats.running;
+
+  // Filter
+  const filtered = jobList.filter(j => {
+    if (isProd) {
+      // S2 label filtering is server-side; only apply verdict filters client-side
+      if (prodS2Filters.has('all')) return true;
+      const verdictValues = ['untagged','correct','incorrect','disputed'];
+      const activeVerdicts = verdictValues.filter(v => prodS2Filters.has(v));
+      if (activeVerdicts.length === 0) return true; // no verdict filter active
+      const verdict = j.human_verdict_s2;
+      if (activeVerdicts.includes('untagged') && !verdict) return true;
+      if (activeVerdicts.includes('correct') && verdict === 'correct') return true;
+      if (activeVerdicts.includes('incorrect') && verdict === 'incorrect') return true;
+      if (activeVerdicts.includes('disputed') && verdict === 'disputed') return true;
+      return false;
+    }
+    // Eval mode filters
+    if (currentFilter === 'all') return true;
+    if (currentFilter === 'untagged') return !j.human_verdict_s1 && !j.human_verdict_s2;
+    if (currentFilter === 'correct') return j.human_verdict_s1 === 'correct' || j.human_verdict_s2 === 'correct';
+    if (currentFilter === 'incorrect') return j.human_verdict_s1 === 'incorrect' || j.human_verdict_s2 === 'incorrect';
+    if (currentFilter === 'disputed') return j.human_verdict_s1 === 'disputed' || j.human_verdict_s2 === 'disputed';
+    if (currentFilter === 'phishing') return j.stage_1?.classification?.result === true;
+    if (currentFilter === 'legit') return j.stage_1?.classification?.result === false;
+    if (currentFilter === 'wc_flagged') return j.whitecircle?.flagged === true;
+    if (currentFilter === 'wc_clear') return j.whitecircle?.flagged === false;
+    if (currentFilter === 'disagree') {
+      const s1Flag = j.stage_1?.classification?.result;
+      const wcFlag = j.whitecircle?.flagged;
+      return s1Flag != null && wcFlag != null && s1Flag !== wcFlag;
+    }
+    if (currentFilter === 'malicious') return j.stage_2?.classification?.label === 'CONFIRMED_MALICIOUS';
+    if (currentFilter === 'review') return j.stage_2?.classification?.label === 'NEEDS_HUMAN_REVIEW';
+    return true;
+  });
+
+  empty.style.display = filtered.length ? 'none' : 'block';
+  document.getElementById('empty-text').innerHTML = currentMode === 'production'
+    ? 'No production phishing detections found in BigQuery'
+    : 'Run <code>python classifier.py &lt;job_id&gt;</code> to start evaluating';
+
+  let html = '';
+  filtered.forEach(j => {
+    const jid = j.job_id;
+    const ekey = j.eval_key || jid;
+    const shortId = jid;
+    const task = truncate(j.task_preview || j.stage_1?.task_preview || '—', 100);
+    const s1 = j.stage_1?.classification || {};
+    const s2 = j.stage_2?.classification || {};
+    const isExpanded = expandedKey === ekey;
+
+    // S1 badge
+    let s1Badge = '<span class="badge badge-pending">waiting</span>';
+    if (s1.result === true) s1Badge = `<span class="badge badge-phishing">PHISH ${fmtConf(s1.confidence)}</span>`;
+    else if (s1.result === false) s1Badge = `<span class="badge badge-legit">LEGIT ${fmtConf(s1.confidence)}</span>`;
+
+    // S2 badge
+    let s2Badge = '';
+    if (j.stage_2) {
+      const lbl = s2.label || '?';
+      if (lbl === 'CONFIRMED_MALICIOUS') s2Badge = `<span class="badge badge-malicious">${lbl}</span>`;
+      else if (lbl === 'NEEDS_HUMAN_REVIEW') s2Badge = `<span class="badge badge-review">${lbl}</span>`;
+      else if (lbl === 'LEGITIMATE') s2Badge = `<span class="badge badge-legit">${lbl}</span>`;
+      else s2Badge = `<span class="badge badge-pending">${lbl}</span>`;
+    } else if (s1.result === true) {
+      s2Badge = '<span class="badge badge-running">in-flight</span>';
+    } else {
+      s2Badge = '<span style="color:var(--text2)">—</span>';
+    }
+
+    // WhiteCircle badge
+    const wc = j.whitecircle || {};
+    let wcBadge = '<span style="color:var(--text2)">—</span>';
+    if (wc.error) wcBadge = '<span class="badge badge-pending">ERROR</span>';
+    else if (wc.flagged === true) wcBadge = '<span class="badge badge-phishing">FLAGGED</span>';
+    else if (wc.flagged === false) wcBadge = '<span class="badge badge-legit">CLEAR</span>';
+
+    // Human verdict selects (separate for S1, WC, and S2)
+    const hvS1 = j.human_verdict_s1 || '';
+    const hvWC = j.human_verdict_wc || '';
+    const hvS2 = j.human_verdict_s2 || '';
+    const vClassS1 = hvS1 === 'correct' ? 'v-correct' : hvS1 === 'incorrect' ? 'v-incorrect' : hvS1 === 'disputed' ? 'v-disputed' : '';
+    const vClassWC = hvWC === 'correct' ? 'v-correct' : hvWC === 'incorrect' ? 'v-incorrect' : hvWC === 'disputed' ? 'v-disputed' : '';
+    const vClassS2 = hvS2 === 'correct' ? 'v-correct' : hvS2 === 'incorrect' ? 'v-incorrect' : hvS2 === 'disputed' ? 'v-disputed' : '';
+
+    // Versions
+    const pv = j.prompt_versions || {};
+    const verStr = [pv.llm_classifier, pv.escalation_agent].filter(Boolean).join('/') || '—';
+
+    // Pipeline time
+    let timeStr = '—';
+    if (j.pipeline_time) timeStr = j.pipeline_time.toFixed(0) + 's';
+    else if (j.stage_1?.elapsed_seconds) timeStr = j.stage_1.elapsed_seconds.toFixed(1) + 's';
+
+    const colCount = isProd ? 6 : 10;
+
+    if (isProd) {
+      html += `<tr class="${isExpanded ? 'expanded' : ''}" onclick="toggleExpand('${ekey}')">
+        <td><span class="job-id">${shortId}</span></td>
+        <td><div class="task-text" title="${escHtml(j.task_preview || '')}">${escHtml(task)}</div></td>
+        <td>${s1Badge}</td>
+        <td>${s2Badge}</td>
+        <td onclick="event.stopPropagation()">
+          <select class="verdict-select ${vClassS2}" onchange="setVerdict('${ekey}', 's2', this.value, this)">
+            <option value="" ${!hvS2 ? 'selected' : ''}>—</option>
+            <option value="correct" ${hvS2==='correct'?'selected':''}>Correct</option>
+            <option value="incorrect" ${hvS2==='incorrect'?'selected':''}>Incorrect</option>
+            <option value="disputed" ${hvS2==='disputed'?'selected':''}>Disputed</option>
+          </select>
+        </td>
+        <td style="font-size:11px;color:var(--text2)">${verStr}</td>
+      </tr>`;
+    } else {
+      html += `<tr class="${isExpanded ? 'expanded' : ''}" onclick="toggleExpand('${ekey}')">
+        <td><span class="job-id">${shortId}</span></td>
+        <td><div class="task-text" title="${escHtml(j.task_preview || '')}">${escHtml(task)}</div></td>
+        <td>${s1Badge}</td>
+        <td onclick="event.stopPropagation()">
+          <select class="verdict-select ${vClassS1}" onchange="setVerdict('${ekey}', 's1', this.value, this)">
+            <option value="" ${!hvS1 ? 'selected' : ''}>—</option>
+            <option value="correct" ${hvS1==='correct'?'selected':''}>Correct</option>
+            <option value="incorrect" ${hvS1==='incorrect'?'selected':''}>Incorrect</option>
+            <option value="disputed" ${hvS1==='disputed'?'selected':''}>Disputed</option>
+          </select>
+        </td>
+        <td>${wcBadge}</td>
+        <td onclick="event.stopPropagation()">
+          <select class="verdict-select ${vClassWC}" onchange="setVerdict('${ekey}', 'wc', this.value, this)">
+            <option value="" ${!hvWC ? 'selected' : ''}>—</option>
+            <option value="correct" ${hvWC==='correct'?'selected':''}>Correct</option>
+            <option value="incorrect" ${hvWC==='incorrect'?'selected':''}>Incorrect</option>
+            <option value="disputed" ${hvWC==='disputed'?'selected':''}>Disputed</option>
+          </select>
+        </td>
+        <td>${s2Badge}</td>
+        <td onclick="event.stopPropagation()">
+          <select class="verdict-select ${vClassS2}" onchange="setVerdict('${ekey}', 's2', this.value, this)">
+            <option value="" ${!hvS2 ? 'selected' : ''}>—</option>
+            <option value="correct" ${hvS2==='correct'?'selected':''}>Correct</option>
+            <option value="incorrect" ${hvS2==='incorrect'?'selected':''}>Incorrect</option>
+            <option value="disputed" ${hvS2==='disputed'?'selected':''}>Disputed</option>
+          </select>
+        </td>
+        <td style="font-size:11px;color:var(--text2)">${verStr}</td>
+        <td style="font-size:11px;color:var(--text2)">${timeStr}</td>
+      </tr>`;
+    }
+
+    // Detail row
+    html += `<tr class="detail-row ${isExpanded ? 'show' : ''}" id="detail-${ekey}">
+      <td colspan="${colCount}">${isExpanded ? renderDetail(j, isProd) : ''}</td>
+    </tr>`;
+  });
+
+  tbody.innerHTML = html;
+
+  // Refresh analytics if panel is open
+  if (document.getElementById('analytics-panel').classList.contains('show')) renderAnalytics();
+}
+
+function renderDetail(j, isProd) {
+  const s1 = j.stage_1 || {};
+  const s1cls = s1.classification || {};
+  const s2 = j.stage_2 || {};
+  const s2cls = s2.classification || {};
+  const harm = s2.harm_assessment || {};
+  const tools = s2.tool_findings || {};
+  const slack = s2.slack_summary || {};
+
+  // Harm items
+  const harmKeys = ['credential_theft','deceptive_exfiltration','user_deceived','tool_for_scale_harm','service_replication'];
+  const harmHtml = harmKeys.map(k => {
+    const h = harm[k] || {};
+    const det = h.detected;
+    const cls = det ? 'detected' : 'clear';
+    const label = k.replace(/_/g,' ');
+    const detail = det && h.details ? ` — ${truncate(h.details, 60)}` : '';
+    return `<div class="harm-item ${cls}">${det ? 'X' : '-'} ${label}${detail}</div>`;
+  }).join('');
+
+  // Tool status
+  const toolKeys = ['job_details','agent_trajectory','hitl_interactions'];
+  const toolHtml = toolKeys.map(k => {
+    const t = tools[k] || {};
+    const status = !t.called ? 'skip' : t.success ? 'ok' : 'fail';
+    const color = status === 'ok' ? 'var(--green)' : status === 'fail' ? 'var(--red)' : 'var(--text2)';
+    return `<span style="color:${color};margin-right:12px">${k.replace(/_/g,' ')}: ${status}</span>`;
+  }).join('');
+
+  const notes = j.human_notes || '';
+
+  return `<div class="detail-panel">
+    <div class="detail-section">
+      <h3>Stage 1 — LLM Classifier</h3>
+      <div class="detail-kv"><span class="k">Result</span><span class="v">${s1cls.result === true ? 'PHISHING' : s1cls.result === false ? 'LEGITIMATE' : '—'}</span></div>
+      <div class="detail-kv"><span class="k">Confidence</span><span class="v">${s1cls.confidence ?? '—'}</span></div>
+      <div class="detail-kv"><span class="k">Severity</span><span class="v">${s1cls.severity ?? '—'}</span></div>
+      <div class="detail-kv"><span class="k">Reason</span><span class="v">${escHtml(s1cls.reason || '—')}</span></div>
+      <div class="detail-kv"><span class="k">Category</span><span class="v">${Array.isArray(s1cls.category) ? s1cls.category.join(', ') : '—'}</span></div>
+      <div class="detail-kv"><span class="k">Latency</span><span class="v">${s1.elapsed_seconds ? s1.elapsed_seconds.toFixed(1) + 's' : '—'}</span></div>
+      <div class="detail-kv"><span class="k">Tokens</span><span class="v">${s1cls._usage ? s1cls._usage.total_tokens : '—'}</span></div>
+      <div class="detail-kv"><span class="k">Image</span><span class="v">${j.image_url ? `<a href="${j.image_url}" target="_blank" style="color:var(--cyan)">View</a>` : '—'}</span></div>
+    </div>
+
+    ${isProd ? '' : `<div class="detail-section">
+      <h3>WhiteCircle — Comparison</h3>
+      ${(() => {
+        const wc = j.whitecircle || {};
+        if (wc.error) return '<div class="detail-kv"><span class="k">Status</span><span class="v" style="color:var(--red)">ERROR: ' + escHtml(wc.error) + '</span></div>';
+        if (wc.flagged == null) return '<div class="detail-kv"><span class="k">Status</span><span class="v" style="color:var(--text2)">Not run</span></div>';
+        const policies = wc.policies || {};
+        const policyRows = Object.values(policies).map(p =>
+          '<div class="harm-item ' + (p.flagged ? 'detected' : 'clear') + '">' + (p.flagged ? 'X' : '-') + ' ' + escHtml(p.name || '?') + (p.flagged_source ? ' (' + p.flagged_source.join(', ') + ')' : '') + '</div>'
+        ).join('');
+        return '<div class="detail-kv"><span class="k">Flagged</span><span class="v">' + (wc.flagged ? '<span style="color:var(--red)">YES</span>' : '<span style="color:var(--green)">NO</span>') + '</span></div>' +
+          '<div class="detail-kv"><span class="k">Session ID</span><span class="v">' + escHtml(wc.internal_session_id || '—') + '</span></div>' +
+          '<div class="detail-kv"><span class="k">Latency</span><span class="v">' + (wc.elapsed_seconds ? wc.elapsed_seconds.toFixed(1) + 's' : '—') + '</span></div>' +
+          (Object.keys(policies).length ? '<div style="margin-top:8px;font-size:11px;color:var(--text2);margin-bottom:4px">Policies:</div><div class="harm-grid">' + policyRows + '</div>' : '');
+      })()}
+    </div>`}
+
+    <div class="detail-section">
+      <h3>Stage 2 — Escalation Agent</h3>
+      <div class="detail-kv"><span class="k">Label</span><span class="v">${s2cls.label ?? '—'}</span></div>
+      <div class="detail-kv"><span class="k">Severity</span><span class="v">${s2cls.severity ?? '—'}</span></div>
+      <div class="detail-kv"><span class="k">Confidence</span><span class="v">${s2cls.confidence ?? '—'}</span></div>
+      <div class="detail-kv"><span class="k">Category</span><span class="v">${s2cls.category ?? '—'}</span></div>
+      <div class="detail-kv"><span class="k">Reasoning</span><span class="v">${escHtml(truncate(s2cls.reasoning || '—', 200))}</span></div>
+      <div class="detail-kv"><span class="k">What Built</span><span class="v">${escHtml(truncate(s2.what_was_built || '—', 200))}</span></div>
+      ${slack.headline ? `<div class="detail-kv"><span class="k">Slack</span><span class="v">${slack.emoji || ''} ${escHtml(slack.headline)}</span></div>` : ''}
+    </div>
+
+    <div class="detail-section">
+      <h3>Harm Assessment</h3>
+      <div class="harm-grid">${harmHtml}</div>
+    </div>
+
+    <div class="detail-section">
+      <h3>Tool Findings</h3>
+      <div style="margin-bottom:8px">${toolHtml}</div>
+      ${renderToolFindings(tools)}
+    </div>
+
+    <div class="detail-section full-width">
+      <h3>Human Eval Notes</h3>
+      <textarea class="notes-input" placeholder="Add evaluation notes..." oninput="debounceNotes('${j.eval_key || j.job_id}', this.value)">${escHtml(notes)}</textarea>
+    </div>
+
+    <div class="detail-section full-width">
+      <h3>Raw JSON</h3>
+      <span class="json-toggle" onclick="toggleJson(this)">Show Stage 1 JSON</span>
+      <div class="json-content">${escHtml(JSON.stringify(s1, null, 2))}</div>
+      <span class="json-toggle" onclick="toggleJson(this)">Show WhiteCircle JSON</span>
+      <div class="json-content">${escHtml(JSON.stringify(j.whitecircle || {}, null, 2))}</div>
+      <span class="json-toggle" onclick="toggleJson(this)">Show Stage 2 JSON</span>
+      <div class="json-content">${escHtml(JSON.stringify(s2, null, 2))}</div>
+    </div>
+  </div>`;
+}
+
+function renderToolFindings(tools) {
+  let html = '';
+  for (const [key, t] of Object.entries(tools)) {
+    if (!t || !t.called) continue;
+    const findings = t.key_findings || [];
+    if (findings.length === 0) continue;
+    html += `<div style="margin-top:8px;font-size:11px;color:var(--text2)"><strong>${key.replace(/_/g,' ')}:</strong></div>`;
+    findings.forEach(f => {
+      html += `<div style="font-size:11px;padding-left:8px;color:var(--text2)">- ${escHtml(truncate(f, 100))}</div>`;
+    });
+  }
+  return html;
+}
+
+// ── Actions ──
+
+async function setVerdict(evalKey, stage, verdict, el) {
+  el.className = 'verdict-select' + (verdict === 'correct' ? ' v-correct' : verdict === 'incorrect' ? ' v-incorrect' : verdict === 'disputed' ? ' v-disputed' : '');
+  const keyMap = { s1: 'verdict_s1', wc: 'verdict_wc', s2: 'verdict_s2' };
+  const jobKeyMap = { s1: 'human_verdict_s1', wc: 'human_verdict_wc', s2: 'human_verdict_s2' };
+  const key = keyMap[stage];
+
+  // Route to correct endpoint based on mode
+  let url;
+  if (currentMode === 'production') {
+    // evalKey is "prod::{job_id}", extract job_id
+    const jobId = evalKey.replace('prod::', '');
+    url = `${API}/prod/verdict/${jobId}`;
+  } else {
+    url = `${API}/eval/verdict/${evalKey}`;
+  }
+
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ [key]: verdict || null })
+    });
+    if (jobs[evalKey]) {
+      jobs[evalKey][jobKeyMap[stage]] = verdict || null;
+    }
+    render();
+  } catch(e) { console.error('setVerdict failed:', e); }
+}
+
+let notesTimers = {};
+function debounceNotes(evalKey, text) {
+  clearTimeout(notesTimers[evalKey]);
+  notesTimers[evalKey] = setTimeout(() => saveNotes(evalKey, text), 800);
+}
+
+async function saveNotes(evalKey, text) {
+  let url;
+  if (currentMode === 'production') {
+    const jobId = evalKey.replace('prod::', '');
+    url = `${API}/prod/verdict/${jobId}`;
+  } else {
+    url = `${API}/eval/verdict/${evalKey}`;
+  }
+  try {
+    await fetch(url, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ notes: text })
+    });
+    if (jobs[evalKey]) jobs[evalKey].human_notes = text;
+  } catch(e) { console.error('saveNotes failed:', e); }
+}
+
+async function saveConfig() {
+  const config = {
+    llm_classifier_prompt_version: document.getElementById('cfg-llm').value,
+    escalation_agent_prompt_version: document.getElementById('cfg-agent').value,
+    user_message_prompt_version: document.getElementById('cfg-msg').value,
+  };
+  try {
+    await fetch(`${API}/eval/config`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(config)
+    });
+  } catch(e) { console.error('saveConfig failed:', e); }
+}
+
+function toggleExpand(evalKey) {
+  expandedKey = expandedKey === evalKey ? null : evalKey;
+  render();
+}
+
+function toggleJson(el) {
+  const content = el.nextElementSibling;
+  content.classList.toggle('show');
+  el.textContent = content.classList.contains('show') ? 'Hide JSON' : el.textContent.replace('Hide', 'Show');
+}
+
+function setFilter(f, el) {
+  currentFilter = f;
+  document.querySelectorAll('.filter-chip').forEach(c => c.classList.remove('active'));
+  el.classList.add('active');
+  render();
+}
+
+function exportCSV() {
+  const rows = [['eval_key','job_id','task','s1_result','s1_confidence','s1_severity','s1_human_verdict','wc_flagged','wc_policies','wc_human_verdict','s2_label','s2_severity','s2_confidence','s2_human_verdict','human_notes','llm_version','agent_version','msg_version','pipeline_time']];
+  Object.values(jobs).forEach(j => {
+    const s1 = j.stage_1?.classification || {};
+    const s2 = j.stage_2?.classification || {};
+    const wc = j.whitecircle || {};
+    const pv = j.prompt_versions || {};
+    const wcPolicies = Object.values(wc.policies || {}).filter(p => p.flagged).map(p => p.name).join('; ');
+    rows.push([
+      `"${j.eval_key || j.job_id}"`,
+      j.job_id,
+      `"${(j.task_preview||'').replace(/"/g,'""')}"`,
+      s1.result === true ? 'PHISHING' : s1.result === false ? 'LEGITIMATE' : '',
+      s1.confidence ?? '',
+      s1.severity ?? '',
+      j.human_verdict_s1 ?? '',
+      wc.flagged === true ? 'FLAGGED' : wc.flagged === false ? 'CLEAR' : '',
+      `"${wcPolicies}"`,
+      j.human_verdict_wc ?? '',
+      s2.label ?? '',
+      s2.severity ?? '',
+      s2.confidence ?? '',
+      j.human_verdict_s2 ?? '',
+      `"${(j.human_notes||'').replace(/"/g,'""')}"`,
+      pv.llm_classifier ?? '',
+      pv.escalation_agent ?? '',
+      pv.user_message ?? '',
+      j.pipeline_time ? j.pipeline_time.toFixed(1) : ''
+    ]);
+  });
+  const csv = rows.map(r => r.join(',')).join('\n');
+  const blob = new Blob([csv], {type:'text/csv'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `phishing_eval_${new Date().toISOString().slice(0,10)}.csv`;
+  a.click();
+}
+
+// ── Analytics ──
+
+function toggleAnalytics() {
+  const panel = document.getElementById('analytics-panel');
+  panel.classList.toggle('show');
+  if (panel.classList.contains('show')) renderAnalytics();
+}
+
+function renderAnalytics() {
+  const jobList = Object.values(jobs);
+
+  // ── S1/WC Accuracy vs S2 ground truth ──
+  // Ground truth: jobs where human marked S2 as "correct"
+  // S2 label becomes the truth; compare S1/WC against it
+  const byVersion = {};
+
+  jobList.forEach(j => {
+    if (j.human_verdict_s2 !== 'correct') return; // only use S2-correct as ground truth
+    const s2Label = j.stage_2?.classification?.label;
+    if (!s2Label || s2Label === 'NEEDS_HUMAN_REVIEW') return; // skip ambiguous
+
+    const s1Result = j.stage_1?.classification?.result;
+    const wcFlagged = j.whitecircle?.flagged;
+    const isMalicious = s2Label === 'CONFIRMED_MALICIOUS';
+
+    const pv = j.prompt_versions || {};
+    const versionKey = `${pv.llm_classifier || '?'} / ${pv.escalation_agent || '?'}`;
+
+    if (!byVersion[versionKey]) {
+      byVersion[versionKey] = { samples: 0, s1_correct: 0, s1_total: 0, wc_correct: 0, wc_total: 0 };
+    }
+    const bv = byVersion[versionKey];
+    bv.samples++;
+
+    // S1 accuracy: phishing=true should match CONFIRMED_MALICIOUS, false should match LEGITIMATE
+    if (s1Result != null) {
+      bv.s1_total++;
+      if ((s1Result === true && isMalicious) || (s1Result === false && !isMalicious)) {
+        bv.s1_correct++;
+      }
+    }
+
+    // WC accuracy: flagged=true should match CONFIRMED_MALICIOUS
+    if (wcFlagged != null) {
+      bv.wc_total++;
+      if ((wcFlagged === true && isMalicious) || (wcFlagged === false && !isMalicious)) {
+        bv.wc_correct++;
+      }
+    }
+  });
+
+  const accTbody = document.querySelector('#accuracy-table tbody');
+  const accEmpty = document.getElementById('accuracy-empty');
+  const versionKeys = Object.keys(byVersion);
+
+  if (versionKeys.length === 0) {
+    accTbody.innerHTML = '';
+    accEmpty.style.display = 'block';
+  } else {
+    accEmpty.style.display = 'none';
+    accTbody.innerHTML = versionKeys.map(vk => {
+      const bv = byVersion[vk];
+      const s1Pct = bv.s1_total ? ((bv.s1_correct / bv.s1_total) * 100) : null;
+      const wcPct = bv.wc_total ? ((bv.wc_correct / bv.wc_total) * 100) : null;
+      return `<tr>
+        <td style="color:var(--cyan)">${escHtml(vk)}</td>
+        <td>${bv.samples}</td>
+        <td>${s1Pct != null ? `<span style="color:${s1Pct >= 70 ? 'var(--green)' : s1Pct >= 40 ? 'var(--yellow)' : 'var(--red)'}">${s1Pct.toFixed(0)}%</span> (${bv.s1_correct}/${bv.s1_total})${accBar(s1Pct)}` : '<span style="color:var(--text2)">—</span>'}</td>
+        <td>${wcPct != null ? `<span style="color:${wcPct >= 70 ? 'var(--green)' : wcPct >= 40 ? 'var(--yellow)' : 'var(--red)'}">${wcPct.toFixed(0)}%</span> (${bv.wc_correct}/${bv.wc_total})${accBar(wcPct)}` : '<span style="color:var(--text2)">—</span>'}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  // ── S2 Error Tracking ──
+  let s2Correct = 0, s2Incorrect = 0, s2Disputed = 0;
+  const s2ByVersion = {};
+
+  jobList.forEach(j => {
+    const v = j.human_verdict_s2;
+    if (!v) return;
+
+    if (v === 'correct') s2Correct++;
+    else if (v === 'incorrect') s2Incorrect++;
+    else if (v === 'disputed') s2Disputed++;
+
+    const pv = j.prompt_versions || {};
+    const vk = pv.escalation_agent || '?';
+    if (!s2ByVersion[vk]) s2ByVersion[vk] = { correct: 0, incorrect: 0, disputed: 0 };
+    if (v === 'correct') s2ByVersion[vk].correct++;
+    else if (v === 'incorrect') s2ByVersion[vk].incorrect++;
+    else if (v === 'disputed') s2ByVersion[vk].disputed++;
+  });
+
+  const s2Total = s2Correct + s2Incorrect + s2Disputed;
+  document.getElementById('s2-total-judged').textContent = s2Total;
+  document.getElementById('s2-correct-count').textContent = s2Correct;
+  document.getElementById('s2-incorrect-count').textContent = s2Incorrect;
+  document.getElementById('s2-disputed-count').textContent = s2Disputed;
+  document.getElementById('s2-accuracy-pct').textContent = s2Total > 0 ? ((s2Correct / s2Total) * 100).toFixed(0) + '%' : '—';
+
+  const s2Tbody = document.querySelector('#s2-error-table tbody');
+  s2Tbody.innerHTML = Object.entries(s2ByVersion).map(([vk, d]) => {
+    const total = d.correct + d.incorrect + d.disputed;
+    const pct = total > 0 ? ((d.correct / total) * 100).toFixed(0) : '—';
+    return `<tr>
+      <td style="color:var(--cyan)">${escHtml(vk)}</td>
+      <td style="color:var(--green)">${d.correct}</td>
+      <td style="color:var(--red)">${d.incorrect}</td>
+      <td style="color:var(--orange)">${d.disputed}</td>
+      <td>${pct !== '—' ? pct + '%' + accBar(parseFloat(pct)) : '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+function accBar(pct) {
+  if (pct == null) return '';
+  const color = pct >= 70 ? 'var(--green)' : pct >= 40 ? 'var(--yellow)' : 'var(--red)';
+  return ` <span class="acc-bar" style="width:${Math.max(pct * 0.6, 2)}px;background:${color}"></span>`;
+}
+
+// ── Helpers ──
+
+function truncate(s, n) { return s && s.length > n ? s.substring(0, n-1) + '...' : s || ''; }
+function fmtConf(c) { return c != null ? (typeof c === 'number' ? c.toFixed(2) : c) : ''; }
+function escHtml(s) {
+  if (!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Init ──
+
+// Default to production mode
+document.getElementById('prompt-versions').style.display = 'none';
+document.getElementById('live-dot').style.display = 'none';
+fetchProdJobs(false);
+</script>
+</body>
+</html>
